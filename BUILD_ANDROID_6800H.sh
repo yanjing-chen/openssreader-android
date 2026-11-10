@@ -7,6 +7,7 @@ python3 verification/check_geckoview_toolchain.py
 python3 verification/check_geckoview_bookstore.py
 python3 verification/check_bookshelf_integrity.py
 python3 verification/check_release_1_0.py
+python3 verification/check_network_security_config.py
 python3 verification/check_book_manifest.py .
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 if [[ -z "$SDK" && -f local.properties ]]; then

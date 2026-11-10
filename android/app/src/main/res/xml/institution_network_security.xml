@@ -3,10 +3,10 @@
     <base-config cleartextTrafficPermitted="false" />
     <!-- Known legacy institution services use HTTP; do not enable cleartext globally. -->
     <domain-config cleartextTrafficPermitted="true">
-        <domain>read.sslibrary.com</domain>
-        <domain>bookworld.5read.com</domain>
-        <domain>bfts.5read.com</domain>
-        <domain>nfts.5read.com</domain>
-        <domain>d.chaoxing.com</domain>
+        <domain includeSubdomains="false">read.sslibrary.com</domain>
+        <domain includeSubdomains="false">bookworld.5read.com</domain>
+        <domain includeSubdomains="false">bfts.5read.com</domain>
+        <domain includeSubdomains="false">nfts.5read.com</domain>
+        <domain includeSubdomains="false">d.chaoxing.com</domain>
     </domain-config>
 </network-security-config>

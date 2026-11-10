@@ -45,8 +45,9 @@ if (( ${#missing[@]} > 0 )); then
     exit 0
 fi
 if git rev-parse 'refs/tags/v1.0.0' >/dev/null 2>&1; then
-    echo '本地 v1.0.0 标签已存在；将重试推送该标签。'
-    git push origin v1.0.0
+    echo '检测到 v1.0.0 标签已经存在；不会直接重推旧标签（否则会使用旧代码）。'
+    echo '如果上一次 Release 因 lint 失败且尚未正式发布，请使用：'
+    echo '  bash ./RETRY_FAILED_RELEASE_6800H.sh /path/to/existing/git/checkout'
     exit 0
 fi
 printf '\n即将推送 v1.0.0 触发正式签名构建与公开 Release。\n'

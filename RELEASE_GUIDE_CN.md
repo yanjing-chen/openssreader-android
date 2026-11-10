@@ -30,3 +30,16 @@
 ## 日志与安全
 
 GitHub 密码、token、签名密钥、机构账户、Cookies 不可提交到 Git；`*.keystore`、`*.jks`、`local.properties` 均被忽略。Release 构建在 GitHub Actions 内签名。源码仓库不发布 PDZ 图书样本以外的用户私人图书、授权令牌或账号数据。
+
+## 首次 v1.0.0 发布工作流失败后的安全恢复
+
+如果 GitHub `Android Signed Release` 已因 Lint 检查失败，且 **v1.0.0 从未成功发布 Release**：
+
+1. 不要重新生成签名密钥，不要卸载平板上的旧版。
+2. 保留最初用于 `git push` 的 Git 工作目录（有 `.git`）。
+3. 解压最新的完整源码包到新目录，在新目录执行：
+   `bash ./RETRY_FAILED_RELEASE_6800H.sh /home/chen/下载/你最初推送的源码目录`。
+4. 脚本检查 GitHub 账号、仓库、当前 main、未发布 Release 和远程标签状态；经确认后将修正后的源码文件复制到原仓库，提交并推送 `main`，最后使用精确租约保护更新尚未发布的 `v1.0.0` 标签，触发新的 Release CI。
+5. 若 GitHub 已创建 Release、启用了 immutable releases 或标签保护规则，脚本将终止修改标签；应另行按仓库规则处理，不可强行绕过保护。
+
+注意：仅点击 GitHub Actions 的 “Re-run jobs” 会重新构建**旧标签指向的旧代码**，不能代替更新源代码和未发布的标签。以后已发布版本一律递增 versionCode/versionName、创建新标签，不改写历史标签。

@@ -30,6 +30,8 @@ jobs:
           test -s "$ANDROID_SDK_ROOT/platforms/android-37.0/android.jar"
       - name: Compile and test
         run: bash ./BUILD_ANDROID_6800H.sh
+      - name: Release lint gate (same checks as signed APK)
+        run: bash android/gradlew --no-daemon :app:lintVitalRelease
       - uses: actions/upload-artifact@v4
         with:
           name: OpenSSReader-Android-debug

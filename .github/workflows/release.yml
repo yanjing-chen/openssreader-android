@@ -35,6 +35,8 @@ jobs:
           test -s "$ANDROID_SDK_ROOT/platforms/android-37.0/android.jar"
       - name: Source and Android tests
         run: bash ./BUILD_ANDROID_6800H.sh
+      - name: Validate release lint before signing
+        run: bash android/gradlew --no-daemon :app:lintVitalRelease
       - name: Restore private signing keystore
         env:
           STORE_B64: ${{ secrets.OSR_ANDROID_KEYSTORE_BASE64 }}
