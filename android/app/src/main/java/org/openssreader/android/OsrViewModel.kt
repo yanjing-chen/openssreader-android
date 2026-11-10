@@ -4,9 +4,6 @@ import android.app.Application
 import android.content.ContentResolver
 import android.net.Uri
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.pdf.PdfRenderer
-import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -47,6 +44,7 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
     private val _rootStorageGranted = MutableStateFlow(store.publicFiles.canUseRootDefault())
     val rootStorageGranted = _rootStorageGranted.asStateFlow()
     private val engine = BookEngine(store)
+    private val coverRepository = ShelfCoverRepository(store)
     private val _books = MutableStateFlow(store.load())
     val books = _books.asStateFlow()
     private val _transfers = MutableStateFlow(store.loadTasks())
@@ -425,37 +423,10 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
     // No manual book:// or HTTPS input. Download jobs originate from browser
     // ACTION_VIEW and are handled exclusively by acceptBookLink().
 
-    /** App-private cover extraction, without mutating the PDZ. */
-    fun cover(book: ShelfBook): Bitmap? = try {
-        if (book.type == "PDF") {
-            ParcelFileDescriptor.open(store.raw(book), ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
-                PdfRenderer(descriptor).use { renderer ->
-                    renderer.openPage(0).use { page ->
-                        val multiplier = (400f / maxOf(page.width, page.height)).coerceAtMost(1f)
-                        val image = Bitmap.createBitmap((page.width * multiplier).toInt().coerceAtLeast(1),
-                            (page.height * multiplier).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
-                        image.eraseColor(android.graphics.Color.WHITE)
-                        page.render(image, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                        image
-                    }
-                }
-            }
-        } else {
-            val file = store.raw(book)
-            val catalog = PdzCatalogReader.read(file)
-            val entry = catalog.entries.firstOrNull { it.name.equals("cover.jpg", true) }
-            if (entry == null || entry.size > 8 * 1024 * 1024) null else {
-                val bytes = PdzCatalogReader.resource(file, entry, 8 * 1024 * 1024)
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                val sample = sequenceOf(1,2,4,8,16,32).firstOrNull {
-                    maxOf(bounds.outWidth, bounds.outHeight) / it <= 512
-                } ?: 32
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
-                    BitmapFactory.Options().apply { inSampleSize = sample })
-            }
-        }
-    } catch (_: Exception) { null }
+    /** High-resolution, bounded, app-private cover cache; originals never modified. */
+    fun cover(book: ShelfBook, requestedWidthPx: Int): Bitmap? =
+        coverRepository.load(book, requestedWidthPx)
+
     fun predecode(book: ShelfBook, taskId: String? = null) {
         if (!decodeBusy.add(book.id)) return
         val task = if (taskId == null) TransferTask(name = book.title, stage = "解码中",

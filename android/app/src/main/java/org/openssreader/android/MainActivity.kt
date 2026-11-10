@@ -1,7 +1,6 @@
 package org.openssreader.android
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfRenderer
 import android.os.Bundle
 import android.content.res.Configuration
@@ -16,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.core.view.WindowCompat
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -23,6 +23,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.ui.layout.onSizeChanged
@@ -120,6 +121,12 @@ class MainActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The app uses a light background. Dark system status icons remain readable
+        // on narrow Android phones where the status bar is transparent.
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
+        }
         pendingStorageKind = savedInstanceState?.getString("pending-storage-kind")?.let {
             runCatching { PublicBookStorage.Kind.valueOf(it) }.getOrNull()
         }
@@ -328,66 +335,171 @@ private fun AppScreen(model: OsrViewModel, bookstoreSession: GeckoBookstoreState
                 TAB_BOOKSTORE -> GeckoBookstorePage(state = bookstoreSession,
                     onBookLink = model::acceptBookLink)
                 TAB_SHELF -> {
-                    Row(Modifier.fillMaxSize()) {
-                        val landscape = androidx.compose.ui.platform.LocalConfiguration.current.orientation ==
-                            android.content.res.Configuration.ORIENTATION_LANDSCAPE
-                        LibrarySidebar(books, favorites, labels, activeDownloadCount, section,
-                            onSelect = { destination ->
-                                if (destination == "downloading") tab = TAB_DOWNLOAD
-                                else section = destination
-                            },
-                            onNewLabel = { labelDialogText = ""; labelDialogId = "new" },
-                            onRenameLabel = { label -> labelDialogText = label.title; labelDialogId = label.id },
-                            onDeleteLabel = { label -> deleteLabelId = label.id },
-                            modifier = Modifier.width(if (landscape) 265.dp else 208.dp))
-                        VerticalDivider()
-                        Column(Modifier.weight(1f).fillMaxHeight().padding(start = 12.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (section == "all") "本地书架" else if (section == "recent") "最近阅读"
-                            else if (section == "favorites") "我的最爱"
-                            else labels.firstOrNull { "tag:${it.id}" == section }?.title ?: "本地书架",
-                            style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.weight(1f))
-                        Text("${books.size} 本", style = MaterialTheme.typography.bodySmall)
-                    }
-                    if (books.isNotEmpty()) OutlinedTextField(value = search, onValueChange = { search = it },
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp), singleLine = true,
-                        label = { Text("搜索书名、作者、出版社") }, leadingIcon = { Icon(Icons.Default.Search, null) })
-                    val sectionBooks = when {
-                        section == "recent" -> books.filter { it.lastOpened > 0L }
-                        section == "favorites" -> books.filter { it.id in favorites }
-                        section.startsWith("tag:") -> {
-                            val members = labels.firstOrNull { "tag:${it.id}" == section }?.bookIds.orEmpty()
-                            books.filter { it.id in members }
+                    BoxWithConstraints(Modifier.fillMaxSize()) {
+                        // Use real available Compose width (dp), not orientation or
+                        // device model. Compact windows must never keep two columns.
+                        val compact = maxWidth < 600.dp
+                        val wideSidebar = maxWidth >= 840.dp
+                        if (compact) {
+                            val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+                            val drawerScope = rememberCoroutineScope()
+                            BackHandler(enabled = drawerState.isOpen) {
+                                drawerScope.launch { drawerState.close() }
+                            }
+                            ModalNavigationDrawer(
+                                drawerState = drawerState,
+                                drawerContent = {
+                                    ModalDrawerSheet(modifier = Modifier.widthIn(max = 320.dp)) {
+                                        LibrarySidebar(books, favorites, labels, activeDownloadCount, section,
+                                            onSelect = { destination ->
+                                                if (destination == "downloading") tab = TAB_DOWNLOAD
+                                                else section = destination
+                                                drawerScope.launch { drawerState.close() }
+                                            },
+                                            onNewLabel = {
+                                                drawerScope.launch {
+                                                    drawerState.close()
+                                                    labelDialogText = ""; labelDialogId = "new"
+                                                }
+                                            },
+                                            onRenameLabel = { label ->
+                                                drawerScope.launch {
+                                                    drawerState.close()
+                                                    labelDialogText = label.title; labelDialogId = label.id
+                                                }
+                                            },
+                                            onDeleteLabel = { label ->
+                                                drawerScope.launch {
+                                                    drawerState.close()
+                                                    deleteLabelId = label.id
+                                                }
+                                            },
+                                            modifier = Modifier.fillMaxWidth())
+                                    }
+                                }
+                            ) {
+                                BookshelfContent(model, books, favorites, labels, section,
+                                    search, { search = it }, descending, grid,
+                                    coverWidth, fields, openImport,
+                                    openBook = { activeBookId = it }, export = export,
+                                    compact = true,
+                                    onOpenCategories = { drawerScope.launch { drawerState.open() } },
+                                    modifier = Modifier.fillMaxSize())
+                            }
+                        } else {
+                            Row(Modifier.fillMaxSize()) {
+                                LibrarySidebar(books, favorites, labels, activeDownloadCount, section,
+                                    onSelect = { destination ->
+                                        if (destination == "downloading") tab = TAB_DOWNLOAD
+                                        else section = destination
+                                    },
+                                    onNewLabel = { labelDialogText = ""; labelDialogId = "new" },
+                                    onRenameLabel = { label -> labelDialogText = label.title; labelDialogId = label.id },
+                                    onDeleteLabel = { label -> deleteLabelId = label.id },
+                                    modifier = Modifier.width(if (wideSidebar) 265.dp else 208.dp))
+                                VerticalDivider()
+                                BookshelfContent(model, books, favorites, labels, section,
+                                    search, { search = it }, descending, grid,
+                                    coverWidth, fields, openImport,
+                                    openBook = { activeBookId = it }, export = export,
+                                    compact = false, onOpenCategories = {},
+                                    modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 12.dp))
+                            }
                         }
-                        else -> books
                     }
-                    val filtered = sectionBooks.filter { search.isBlank() ||
-                        it.title.contains(search, true) || it.creator.contains(search, true) ||
-                            it.publisher.contains(search, true) || it.ssid.contains(search) }
-                    val sorted = if (descending) filtered.sortedWith(compareBy<ShelfBook> { it.year == null }.thenByDescending { it.year ?: 0 })
-                        else filtered.sortedWith(compareBy<ShelfBook> { it.year == null }.thenBy { it.year ?: 0 })
-                    if (sorted.isEmpty()) {
-                        if (books.isEmpty()) EmptyShelf(openImport) else Text("当前分类没有图书", Modifier.padding(20.dp))
-                    }
-                    else if (grid) {
-                        LazyVerticalGrid(columns = GridCells.Adaptive(minSize = coverWidth.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(14.dp),
-                            contentPadding = PaddingValues(bottom = 24.dp)) {
-                            items(sorted, key = { it.id }) { book -> ShelfGridCard(model, book, fields,
-                                open = { activeBookId = book.id }, export = export) }
-                        }
-                    } else {
-                        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(sorted, key = { it.id }) { book -> ShelfListRow(model, book, fields,
-                                open = { activeBookId = book.id }, export = export) }
-                        }
-                    }
-                        } // bookshelf right column
-                    } // persistent bookshelf sidebar + right content
                 }
                 TAB_DOWNLOAD -> DownloadPage(tasks, model)
                 TAB_SETTINGS -> SettingsPage(grid, descending, fields, model, chooseStorage, requestFileAccess)
+            }
+        }
+    }
+}
+
+/** Reused on phones and tablets; only the navigation chrome changes by width. */
+@Composable
+private fun BookshelfContent(
+    model: OsrViewModel,
+    books: List<ShelfBook>, favorites: Set<String>, labels: List<ShelfLabel>,
+    section: String, search: String, onSearchChange: (String) -> Unit,
+    descending: Boolean, grid: Boolean, coverWidth: Int, fields: Set<String>,
+    openImport: () -> Unit, openBook: (String) -> Unit, export: (ShelfBook) -> Unit,
+    compact: Boolean, onOpenCategories: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val sectionBooks = when {
+        section == "recent" -> books.filter { it.lastOpened > 0L }
+        section == "favorites" -> books.filter { it.id in favorites }
+        section.startsWith("tag:") -> {
+            val members = labels.firstOrNull { "tag:${it.id}" == section }?.bookIds.orEmpty()
+            books.filter { it.id in members }
+        }
+        else -> books
+    }
+    val title = when (section) {
+        "all" -> "本地书架"
+        "recent" -> "最近阅读"
+        "favorites" -> "我的最爱"
+        else -> labels.firstOrNull { "tag:${it.id}" == section }?.title ?: "本地书架"
+    }
+    val filtered = sectionBooks.filter { search.isBlank() ||
+        it.title.contains(search, true) || it.creator.contains(search, true) ||
+            it.publisher.contains(search, true) || it.ssid.contains(search) }
+    val sorted = if (descending)
+        filtered.sortedWith(compareBy<ShelfBook> { it.year == null }.thenByDescending { it.year ?: 0 })
+    else filtered.sortedWith(compareBy<ShelfBook> { it.year == null }.thenBy { it.year ?: 0 })
+    Column(modifier.fillMaxHeight()) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            if (compact) {
+                FilledTonalButton(onClick = onOpenCategories,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+                    Icon(Icons.Default.Menu, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("分类")
+                }
+                Spacer(Modifier.width(10.dp))
+            }
+            Text(title, modifier = Modifier.weight(1f),
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.width(8.dp))
+            Text("${sectionBooks.size} 本", style = MaterialTheme.typography.bodySmall)
+        }
+        if (books.isNotEmpty()) {
+            OutlinedTextField(value = search, onValueChange = onSearchChange,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                singleLine = true,
+                placeholder = {
+                    Text("搜索书名、作者、出版社", maxLines = 1,
+                        overflow = TextOverflow.Ellipsis)
+                },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) })
+        }
+        if (sorted.isEmpty()) {
+            if (books.isEmpty()) EmptyShelf(openImport)
+            else Text("当前分类没有图书", Modifier.padding(20.dp))
+        } else if (grid) {
+            // Preserve the cover size preference on tablets. On compact screens,
+            // cap the minimum at 140dp so standard phones can show two book covers.
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize =
+                    (if (compact) coverWidth.coerceAtMost(140) else coverWidth).dp),
+                modifier = Modifier.fillMaxSize(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                contentPadding = PaddingValues(bottom = 24.dp)
+            ) {
+                items(sorted, key = { it.id }) { book ->
+                    ShelfGridCard(model, book, fields,
+                        open = { openBook(book.id) }, export = export)
+                }
+            }
+        } else {
+            LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(sorted, key = { it.id }) { book ->
+                    ShelfListRow(model, book, fields,
+                        open = { openBook(book.id) }, export = export)
+                }
             }
         }
     }
@@ -478,11 +590,22 @@ private fun EmptyShelf(openImport: () -> Unit) {
 
 @Composable
 private fun ShelfCover(model: OsrViewModel, book: ShelfBook, modifier: Modifier = Modifier) {
-    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = book.id) {
-        value = withContext(Dispatchers.IO) { model.cover(book) }
-    }
-    Box(modifier.background(Color(0xffe5e9f4), RoundedCornerShape(9.dp)), contentAlignment = Alignment.Center) {
-        if (bitmap != null) Image(bitmap!!.asImageBitmap(), book.title, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val storageRevision by model.storageRevision.collectAsState()
+    BoxWithConstraints(modifier.background(Color(0xffe5e9f4), RoundedCornerShape(9.dp)),
+        contentAlignment = Alignment.Center) {
+        // Match *physical* display pixels, not dp: dense phones must not enlarge
+        // an old 400px thumbnail to a blurry cover. A bounded oversampling margin
+        // keeps the result sharp while avoiding full-page memory allocations.
+        val targetWidthPx = (maxWidth.value * density.density * 1.35f)
+            .toInt().coerceIn(800, 1600)
+        val bitmap by produceState<Bitmap?>(initialValue = null,
+            key1 = book, key2 = targetWidthPx, key3 = storageRevision) {
+            value = withContext(Dispatchers.IO) { model.cover(book, targetWidthPx) }
+        }
+        if (bitmap != null) Image(bitmap!!.asImageBitmap(), book.title,
+            Modifier.fillMaxSize(), contentScale = ContentScale.Fit,
+            filterQuality = androidx.compose.ui.graphics.FilterQuality.High)
         else Icon(Icons.Default.AutoStories, null, Modifier.size(42.dp), tint = Color(0xff6984a7))
     }
 }
@@ -854,6 +977,7 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
     var panX by remember(book.id) { mutableFloatStateOf(0f) }
     var panY by remember(book.id) { mutableFloatStateOf(0f) }
     val scrollState = rememberLazyListState(initialFirstVisibleItemIndex = page)
+    val readerScope = rememberCoroutineScope()
     val chapters by produceState<List<org.openssreader.android.core.Chapter>?>(initialValue = null, key1 = book.id) {
         value = withContext(Dispatchers.IO) { model.chapters(book) }
     }
@@ -861,6 +985,13 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
         value = withContext(Dispatchers.IO) { model.sections(book) }
     }
     var sectionMenu by remember { mutableStateOf(false) }
+    val validSections = remember(sections, maxPage) { sections.filter { it.zeroBasedPage in 0 until maxPage } }
+    val currentSectionTitle = remember(validSections, page, spread, maxPage) {
+        if (validSections.isEmpty()) "章节" else {
+            val anchorPage = if (spread) ReaderSpread.anchor(page, maxPage) else page
+            validSections.lastOrNull { it.zeroBasedPage <= anchorPage }?.title ?: validSections.first().title
+        }
+    }
     // Align the requested page to a stable two-page spread. A book's cover
     // (page 1) is displayed alone, then pages 2–3, 4–5, etc.
     LaunchedEffect(readerLayout) {
@@ -927,8 +1058,11 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
                 page = if (spread) ReaderSpread.anchor(target, maxPage) else target
                 scale = 1f; panX = 0f; panY = 0f
             }, valueRange = 0f..(maxPage - 1).toFloat(), modifier = Modifier.padding(horizontal = 20.dp))
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceEvenly) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
                 val previous = if (spread) ReaderSpread.previous(page, maxPage) else (page - 1).coerceAtLeast(0)
                 val next = if (spread) ReaderSpread.next(page, maxPage) else (page + 1).coerceAtMost(maxPage - 1)
                 if (!chapters.isNullOrEmpty()) IconButton(onClick = { showToc = !showToc }) {
@@ -938,32 +1072,55 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
                     page = previous; jumpRequest++; scale = 1f; panX = 0f; panY = 0f
                 }) { Icon(Icons.Default.ChevronLeft, "上一页") }
                 TextButton(onClick = { jumpValue = (page + 1).toString(); showJump = true }) {
-                    Text(if (spread) ReaderSpread.label(page, maxPage) else "${page + 1} / $maxPage",
-                        style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        if (spread) ReaderSpread.label(page, maxPage) else "${page + 1} / $maxPage",
+                        style = MaterialTheme.typography.titleSmall
+                    )
                 }
                 IconButton(enabled = next != page, onClick = {
                     page = next; jumpRequest++; scale = 1f; panX = 0f; panY = 0f
                 }) { Icon(Icons.Default.ChevronRight, "下一页") }
-                val validSections = sections.filter { it.zeroBasedPage in 0 until maxPage }
                 if (validSections.isNotEmpty()) Box {
-                    IconButton(onClick = { sectionMenu = true }) {
-                        Icon(Icons.Default.Bookmarks, "前言／目录／正文跳转")
-                    }
-                    DropdownMenu(expanded = sectionMenu, onDismissRequest = { sectionMenu = false }) {
-                        validSections.forEach { section ->
-                            DropdownMenuItem(text = { Text(section.title) }, onClick = {
-                                page = if (spread) ReaderSpread.anchor(section.zeroBasedPage, maxPage)
-                                       else section.zeroBasedPage
-                                jumpRequest++
-                                scale = 1f; panX = 0f; panY = 0f
-                                sectionMenu = false
-                            })
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        tonalElevation = 1.dp,
+                        modifier = Modifier.clickable { sectionMenu = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                currentSectionTitle,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = "前言／目录／正文跳转", modifier = Modifier.size(18.dp))
                         }
                     }
-                }
-                if (!continuous) {
-                    IconButton(onClick = { scale = (scale - 0.25f).coerceAtLeast(1f); clampPan() }) { Icon(Icons.Default.ZoomOut, "缩小") }
-                    IconButton(onClick = { scale = (scale + 0.25f).coerceAtMost(6f); clampPan() }) { Icon(Icons.Default.ZoomIn, "放大") }
+                    DropdownMenu(
+                        expanded = sectionMenu,
+                        onDismissRequest = { sectionMenu = false },
+                        modifier = Modifier.widthIn(min = 108.dp)
+                    ) {
+                        validSections.forEach { section ->
+                            DropdownMenuItem(
+                                text = { Text(section.title, style = MaterialTheme.typography.bodyMedium) },
+                                onClick = {
+                                    page = if (spread) ReaderSpread.anchor(section.zeroBasedPage, maxPage)
+                                           else section.zeroBasedPage
+                                    jumpRequest++
+                                    scale = 1f; panX = 0f; panY = 0f
+                                    sectionMenu = false
+                                },
+                                modifier = Modifier.height(40.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -973,25 +1130,36 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
                 state = scrollState, verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(vertical = 8.dp)) {
                 items(maxPage) { index ->
-                    ContinuousPdfPage(pdf, index, onTap = { showBars = !showBars })
+                    ContinuousPdfPage(pdf, index, onTap = { tapX, pageWidth ->
+                        val zone = ReaderTapNavigation.zone(tapX, pageWidth)
+                        if (zone == ReaderTapZone.CENTER) {
+                            showBars = !showBars
+                        } else {
+                            val destination = ReaderTapNavigation.destination(index, maxPage, false, zone)
+                            if (destination != index) readerScope.launch {
+                                scrollState.animateScrollToItem(destination)
+                            }
+                        }
+                    })
                 }
             }
         } else {
-            // One gesture recognizer only: avoid horizontal-page-swipe versus
-            // Transformable versus drawer races. Two fingers always pinch/pan;
-            // one finger pans only when zoomed, otherwise swipes whole pages.
-            // Vertical movement at 1x is never interpreted as a page turn.
+            // Page navigation is by short taps in the left/right 28% only.
+            // There is deliberately NO single-finger swipe-to-turn branch.
+            // Multi-touch pinch and pan (including one-finger pan when zoomed)
+            // remain intact. A moving/long/zoomed gesture never turns a page.
             val touch = Modifier.pointerInput(firstPage, maxPage, readerLayout) {
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    var dx = 0f
-                    var dy = 0f
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val beganZoomed = scale > 1.01f
                     var multiplePointers = false
-                    val initialScale = scale
+                    var travel = 0f
+                    var eventTime = down.uptimeMillis
                     do {
                         val event = awaitPointerEvent()
+                        eventTime = event.changes.maxOfOrNull { it.uptimeMillis } ?: eventTime
                         val fingers = event.changes.count { it.pressed }
-                        if (fingers >= 2) multiplePointers = true
+                        if (fingers >= 2 || event.changes.size >= 2) multiplePointers = true
                         val delta = event.calculatePan()
                         val pinch = event.calculateZoom()
                         if (multiplePointers || scale > 1.01f) {
@@ -1003,28 +1171,30 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
                             } else clampPan()
                             event.changes.forEach { if (it.pressed) it.consume() }
                         } else {
-                            dx += delta.x
-                            dy += delta.y
-                            if (abs(dx) > viewConfiguration.touchSlop && abs(dx) > abs(dy) * 1.2f)
-                                event.changes.forEach { if (it.pressed) it.consume() }
+                            // Count path travel, not just start/end distance;
+                            // dragging out and back must not be mistaken for a tap.
+                            travel += abs(delta.x) + abs(delta.y)
                         }
                     } while (event.changes.any { it.pressed })
-                    if (!multiplePointers && initialScale <= 1.01f && scale <= 1.01f &&
-                        abs(dx) >= 64.dp.toPx() && abs(dx) > abs(dy) * 1.2f) {
-                        val destination = if (spread) {
-                            if (dx < 0f) ReaderSpread.next(page, maxPage)
-                            else ReaderSpread.previous(page, maxPage)
-                        } else if (dx < 0f) page + 1 else page - 1
-                        if (destination in 0 until maxPage) {
-                            page = destination
-                            scale = 1f; panX = 0f; panY = 0f
+                    if (!multiplePointers && !beganZoomed && scale <= 1.01f &&
+                        travel <= viewConfiguration.touchSlop &&
+                        eventTime - down.uptimeMillis < viewConfiguration.longPressTimeoutMillis) {
+                        val zone = ReaderTapNavigation.zone(down.position.x, size.width.toFloat())
+                        if (zone == ReaderTapZone.CENTER) {
+                            showBars = !showBars
+                        } else {
+                            val destination = ReaderTapNavigation.destination(page, maxPage, spread, zone)
+                            if (destination != page) {
+                                page = destination
+                                scale = 1f; panX = 0f; panY = 0f
+                            }
                         }
                     }
                 }
             }
             Box(Modifier.fillMaxSize().padding(inner).background(Color(0xffe9ecf2))
                 .onSizeChanged { viewportWidth = it.width; viewportHeight = it.height; clampPan() }
-                .clipToBounds().then(touch).clickable { showBars = !showBars },
+                .clipToBounds().then(touch),
                 contentAlignment = Alignment.Center) {
                 if (rendered.first || (spread && renderedRight.first)) CircularProgressIndicator()
                 else if (rendered.second == null || (secondPage != null && renderedRight.second == null))
@@ -1096,7 +1266,7 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
 }
 
 @Composable
-private fun ContinuousPdfPage(pdf: File, index: Int, onTap: () -> Unit) {
+private fun ContinuousPdfPage(pdf: File, index: Int, onTap: (Float, Float) -> Unit) {
     val bitmap by produceState<Bitmap?>(initialValue = null, key1 = pdf.absolutePath, key2 = index) {
         value = withContext(Dispatchers.IO) { renderPdfPage(pdf, index, 1550) }
     }
@@ -1105,6 +1275,8 @@ private fun ContinuousPdfPage(pdf: File, index: Int, onTap: () -> Unit) {
     var offsetY by remember(pdf.absolutePath, index) { mutableFloatStateOf(0f) }
     var width by remember { mutableIntStateOf(1) }
     var height by remember { mutableIntStateOf(1) }
+    val currentOnTap by rememberUpdatedState(onTap)
+    val currentZoom by rememberUpdatedState(zoom)
     val transform = rememberTransformableState { factor, pan, _ ->
         zoom = (zoom * factor).coerceIn(1f, 6f)
         if (zoom <= 1.01f) {
@@ -1128,7 +1300,11 @@ private fun ContinuousPdfPage(pdf: File, index: Int, onTap: () -> Unit) {
             // One-finger vertical scrolling belongs to LazyColumn at 1x.
             // Two-finger pinch zoom and zoomed panning belong to this page.
             .transformable(state = transform, canPan = { zoom > 1.01f })
-            .clickable { onTap() }) {
+             .pointerInput(index) {
+                detectTapGestures(onTap = { point ->
+                    if (currentZoom <= 1.01f) currentOnTap(point.x, width.toFloat())
+                })
+            }) {
             Image(bitmap!!.asImageBitmap(), "第 ${index + 1} 页", Modifier.fillMaxSize()
                 .graphicsLayer(scaleX = zoom, scaleY = zoom,
                     translationX = offsetX, translationY = offsetY),

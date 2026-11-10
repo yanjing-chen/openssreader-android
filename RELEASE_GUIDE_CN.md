@@ -1,45 +1,36 @@
-# OpenSSReader Android 1.0 — 在 6800H 本地推送、构建与发布
+# OpenSSReader Android 1.0.1 · 本地构建与发布
 
-仓库地址（执行脚本后才会创建）：`https://github.com/yanjing-chen/openssreader-android`。仓库须为 **Public**，应用才能无账号访问 GitHub 的 `releases/latest` 接口。
+仓库：`https://github.com/yanjing-chen/openssreader-android`。源码仓库只包含 Android 的现行代码与测试。
 
-## 发布流程
+## 先实机验收
 
-1. 解压完整源码到独立目录，确保是你准备发布的完整 Android 1.0 源码。
-2. 如果未登录 GitHub CLI，执行 `gh auth login`，以账号 `yanjing-chen` 登录。脚本不会要求或记录 GitHub 密码。
-3. 首次推送源码：`bash ./PUSH_FROM_6800H.sh`。它创建公开仓库、提交、推送 `main`，检测签名密钥。若没有密钥则只推送源码，不触发 Release。
-4. 首次配置发布签名：`bash ./SETUP_RELEASE_SIGNING_6800H.sh`。在 `~/.config/openssreader-android/release.keystore` 生成个人发布密钥，安全上传到 **GitHub Actions Secrets**，不会存入仓库。**请离线备份密钥文件和密码。**
-5. 再运行 `bash ./PUSH_FROM_6800H.sh`，输入 `yes` 创建并推送 `v1.0.0` 标签，触发 `.github/workflows/release.yml`。
-6. 查看 GitHub 仓库 Actions。工作流编译、运行测试、签名 APK、校验签名、生成 `.apk.sha256`、发布 GitHub Release。正式下载资产应为 `OpenSSReader-Android-v1.0.0.apk` 和 `OpenSSReader-Android-v1.0.0.apk.sha256`。
+1. 在新的完整源码目录运行 `bash ./BUILD_ANDROID_6800H.sh`。
+2. 通过 ADB 安装 **debug APK** 之前，必须确认设备上当前应用的签名。debug APK 不能覆盖发布签名的 APK，切勿为测试随意卸载、清除书架和 GeckoView 登录数据。
+3. 手机和平板检查：封面清晰度、真实 PDZ 原生封面优先、无封面时 PDF 第 1 页回退、缩放/旋转、书架标签、`book://` 下载和阅读进度。
+4. 本项目保留安卓仪器测试 `HighResolutionShelfCoverTest`，需要连接设备并运行 `cd android && bash ./gradlew :app:connectedDebugAndroidTest`。
 
-## 签名兼容性（非常重要）
+## 上传到现有 GitHub 仓库
 
-**你目前两台平板安装的 Fix4 调试 APK 与新正式版的签名密钥通常不同。** 即使包名相同，Android 也会拒绝直接覆盖安装不同签名的 APK。这不是更新程序错误。不可通过改变 `versionCode` 解决，也**不要贸然卸载**导致私有书架/标签记录丢失。
+首次 v1.0.0 已使用正式签名的仓库，不要重新生成发布密钥，不要覆盖旧 v1.0.0 标签。
 
-发布前先确认你的当前图书、书架索引、标签等均已保存到可访问的 `OpenSSReader` 公共存储目录，额外复制备份整个目录；应用内部私有数据和 GeckoView 登录 Cookies 并不一定随公共目录备份。需要保留私有数据时，应在旧版内完成迁移或另行设计安全迁移，再卸载旧调试版。应用内更新从 **首次安装正式签名版之后** 才能对今后用同一签名的 Release 直接覆盖升级。
+1. 保留原来含 `.git` 的本地仓库工作树，确保是干净的 `main` 分支并已与远程同步。
+2. 在**本完整源码目录**运行：`bash ./PUSH_FROM_6800H.sh /path/to/原有Git仓库`。脚本会检查身份、仓库、工作树，先复制修改并展示 diff；只有确认后才提交并推送 `main`。它不会自动创建 tag。
+3. 等主分支 `Android APK CI` 绿色通过。新版同步脚本在复制前会展示删除清单；再次确认前不会同步和提交。
+4. 在**新完整源码目录**运行 `bash ./RELEASE_1_0_1_6800H.sh /path/to/原有Git仓库`。脚本在推送新 `v1.0.1` 标签前检查远程分支、发布状态、CI 成功记录以及 4 个已有签名 Secret 名称。已有 tag/Release 时会直接拒绝重复发布。
+5. GitHub Actions 将用**与 1.0.0 完全一致的正式签名密钥**发布 `v1.0.1`，提供 APK、SHA-256 和应用内更新。仅在正式工作流成功且 Release 资产齐全后，才视为发布完成。
 
-**不要使用 debug.keystore 签署公开正式版来规避迁移**：调试签名不适合长期公开发布。
+```bash
+# 第二步：CI 成功后创建并推送新标签（不会修改 v1.0.0）
+bash ./RELEASE_1_0_1_6800H.sh /path/to/原有Git仓库
 
-## 应用内检查更新
+# 检查正式签名构建结果
+gh run list -R yanjing-chen/openssreader-android --workflow 'Android Signed Release' --limit 5
+```
 
-设置 → 检查更新：查询公共 GitHub 最新正式 Release。若版本高于当前版本，可下载发布版 APK。应用下载后校验 GitHub 提供的 SHA-256 或附带 `.sha256` 文件，只有校验通过才显示“安装”；安装由 Android 系统安装器执行，可能需要用户首次授权“允许安装未知应用”。不会静默安装。
+## 签名与用户数据
 
-## 后续版本
+应用的 `applicationId` 不变，versionCode 为 `10001`。保持同一正式发布签名即可从 1.0.0 覆盖更新，并保留书架、标签、阅读进度和登录数据。不要提交 keystore、密码、令牌、私有 PDZ/个人图书。
 
-更新 `android/app/build.gradle.kts` 中 `versionName`、递增 `versionCode`，提交并推送，然后推送匹配的 `vX.Y.Z` 标签；使用**同一发布密钥**签名所有正式版。
+## 高清封面处理说明
 
-## 日志与安全
-
-GitHub 密码、token、签名密钥、机构账户、Cookies 不可提交到 Git；`*.keystore`、`*.jks`、`local.properties` 均被忽略。Release 构建在 GitHub Actions 内签名。源码仓库不发布 PDZ 图书样本以外的用户私人图书、授权令牌或账号数据。
-
-## 首次 v1.0.0 发布工作流失败后的安全恢复
-
-如果 GitHub `Android Signed Release` 已因 Lint 检查失败，且 **v1.0.0 从未成功发布 Release**：
-
-1. 不要重新生成签名密钥，不要卸载平板上的旧版。
-2. 保留最初用于 `git push` 的 Git 工作目录（有 `.git`）。
-3. 解压最新的完整源码包到新目录，在新目录执行：
-   `bash ./RETRY_FAILED_RELEASE_6800H.sh /home/chen/下载/你最初推送的源码目录`。
-4. 脚本检查 GitHub 账号、仓库、当前 main、未发布 Release 和远程标签状态；经确认后将修正后的源码文件复制到原仓库，提交并推送 `main`，最后使用精确租约保护更新尚未发布的 `v1.0.0` 标签，触发新的 Release CI。
-5. 若 GitHub 已创建 Release、启用了 immutable releases 或标签保护规则，脚本将终止修改标签；应另行按仓库规则处理，不可强行绕过保护。
-
-注意：仅点击 GitHub Actions 的 “Re-run jobs” 会重新构建**旧标签指向的旧代码**，不能代替更新源代码和未发布的标签。以后已发布版本一律递增 versionCode/versionName、创建新标签，不改写历史标签。
+仅从本地已有 PDZ / 已成功解码 PDF 提取图片。低分辨率来源不能凭空恢复丢失的细节；真实封面一律优先；原图若只有约 149×224 像素，无法凭空创造丢失的细节，不能误用内页冒充封面。若原 PDZ 还未完成授权和转换，个别加密首页暂时不可预览，解码成功后书架自动刷新。缓存有 96 MiB 的磁盘上限，且不写入、修改原始图书文件。

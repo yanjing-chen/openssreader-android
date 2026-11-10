@@ -43,3 +43,38 @@ object ReaderSpread {
     fun label(page: Int, count: Int): String = indices(page, count)
         .let { if (it.size == 2) "${it[0] + 1}–${it[1] + 1} / $count" else "${it.firstOrNull()?.plus(1) ?: 0} / $count" }
 }
+
+/** A full-width page is split into left 28%, center 44%, and right 28%.
+ *  This contains no gesture logic: drags are intentionally not page turns.
+ */
+enum class ReaderTapZone { PREVIOUS, CENTER, NEXT }
+
+object ReaderTapNavigation {
+    private const val EDGE_FRACTION = 0.28f
+
+    fun zone(x: Float, width: Float): ReaderTapZone {
+        if (!x.isFinite() || !width.isFinite() || width <= 0f || x < 0f || x > width)
+            return ReaderTapZone.CENTER
+        return when {
+            x < width * EDGE_FRACTION -> ReaderTapZone.PREVIOUS
+            x >= width * (1f - EDGE_FRACTION) -> ReaderTapZone.NEXT
+            else -> ReaderTapZone.CENTER
+        }
+    }
+
+    fun destination(page: Int, count: Int, spread: Boolean, zone: ReaderTapZone): Int {
+        if (count <= 0) return 0
+        val current = page.coerceIn(0, count - 1)
+        if (zone == ReaderTapZone.CENTER) return current
+        if (spread) return when (zone) {
+            ReaderTapZone.PREVIOUS -> ReaderSpread.previous(current, count)
+            ReaderTapZone.NEXT -> ReaderSpread.next(current, count)
+            ReaderTapZone.CENTER -> current
+        }
+        return when (zone) {
+            ReaderTapZone.PREVIOUS -> (current - 1).coerceAtLeast(0)
+            ReaderTapZone.NEXT -> (current + 1).coerceAtMost(count - 1)
+            ReaderTapZone.CENTER -> current
+        }
+    }
+}

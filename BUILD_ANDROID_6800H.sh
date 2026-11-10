@@ -6,7 +6,11 @@ python3 verification/check_source_cleanliness.py
 python3 verification/check_geckoview_toolchain.py
 python3 verification/check_geckoview_bookstore.py
 python3 verification/check_bookshelf_integrity.py
-python3 verification/check_release_1_0.py
+python3 verification/check_mobile_adaptive.py
+python3 verification/check_reader_tap_navigation.py
+python3 verification/check_compact_section_menu.py
+python3 verification/check_hd_covers.py
+python3 verification/check_release_current.py
 python3 verification/check_network_security_config.py
 python3 verification/check_book_manifest.py .
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -16,7 +20,7 @@ fi
 SDK="${SDK:-$HOME/Android/Sdk}"
 [[ -f "$SDK/platforms/android-37.0/android.jar" ]] || { echo "Missing Android 37.0 platform: $SDK" >&2; exit 3; }
 export ANDROID_HOME="$SDK"
-LOG="$ROOT/android/build-android-1.0.log"
+LOG="$ROOT/android/build-android-1.0.1.log"
 set +e
 bash ./gradlew --version 2>&1 | tee "$LOG"
 check_status=${PIPESTATUS[0]}

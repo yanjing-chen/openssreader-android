@@ -26,10 +26,10 @@ class BookEngine(private val store: ShelfStore) {
         val layout = PdzContentsReader.layout(catalog)
         if (!layout.mappingAvailable) return emptyList()
         val result = mutableListOf<BookSection>()
-        if (layout.front > 0) result.add(BookSection("前言（第 1 页）", 0))
-        if (layout.contents > 0) result.add(BookSection("目录（第 ${layout.front + 1} 页）", layout.front))
-        if (layout.body > 0) result.add(BookSection("正文（第 ${layout.front + layout.contents + 1} 页）",
-            layout.front + layout.contents))
+        // Keep the UI labels concise; exact zero-based page offsets stay in zeroBasedPage.
+        if (layout.front > 0) result.add(BookSection("前言", 0))
+        if (layout.contents > 0) result.add(BookSection("目录", layout.front))
+        if (layout.body > 0) result.add(BookSection("正文", layout.front + layout.contents))
         return result
     }
 

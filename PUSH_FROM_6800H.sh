@@ -1,60 +1,60 @@
 #!/usr/bin/env bash
-# Creates / updates the GitHub repository using the user's *local* gh login.
+# Safe local-only sync into the user's existing Android repository; no tag rewriting.
 set -Eeuo pipefail
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-cd "$ROOT"
-REPO="yanjing-chen/openssreader-android"
-command -v gh >/dev/null || { echo '请先安装 GitHub CLI (gh)' >&2; exit 2; }
-command -v git >/dev/null || { echo '需要 git' >&2; exit 2; }
-gh auth status >/dev/null || { echo '先运行 gh auth login 完成你自己的本地登录' >&2; exit 2; }
-ACCOUNT="$(gh api user --jq '.login')"
-[[ "$ACCOUNT" == "yanjing-chen" ]] || { echo "GitHub 当前账号是 $ACCOUNT，不是 yanjing-chen；已停止。" >&2; exit 3; }
-if ! gh repo view "$REPO" >/dev/null 2>&1; then
-    echo "创建公开仓库 $REPO（供应用无凭据检查 Release 更新）"
-    gh repo create "$REPO" --public --description 'OpenSSReader Android — GeckoView PDZ reader'
+SOURCE="$(cd "$(dirname "$0")" && pwd)"
+TARGET="${1:-}"
+if [[ -z "$TARGET" ]]; then
+    echo '用法：bash ./PUSH_FROM_6800H.sh /path/to/原有Git工作树（带.git）' >&2
+    exit 2
 fi
-if [[ ! -d .git ]]; then git init -b main; fi
-if ! git config user.name >/dev/null || ! git config user.email >/dev/null; then
-    echo '请先配置 Git 作者信息：git config --global user.name 和 user.email' >&2
-    exit 4
+TARGET="$(cd "$TARGET" && pwd)"
+[[ "$SOURCE" != "$TARGET" ]] || { echo '请解压源码到新目录，再指定原有 Git 仓库。' >&2; exit 2; }
+[[ -d "$TARGET/.git" || -f "$TARGET/.git" ]] || { echo '目标必须是原有 Git 工作树，不能是新建目录。' >&2; exit 2; }
+command -v gh >/dev/null && command -v git >/dev/null && command -v rsync >/dev/null || { echo '需要 gh、git、rsync' >&2; exit 2; }
+gh auth status >/dev/null
+ACCOUNT="$(gh api user --jq .login)"
+[[ "$ACCOUNT" == 'yanjing-chen' ]] || { echo "GitHub 账号不符：$ACCOUNT" >&2; exit 3; }
+REMOTE="$(git -C "$TARGET" remote get-url origin)"
+case "$REMOTE" in
+  'https://github.com/yanjing-chen/openssreader-android.git'|'https://github.com/yanjing-chen/openssreader-android'|'git@github.com:yanjing-chen/openssreader-android.git'|'git@github.com:yanjing-chen/openssreader-android') : ;;
+  *) echo "仓库 origin 不符：$REMOTE" >&2; exit 3 ;;
+esac
+[[ "$(git -C "$TARGET" branch --show-current)" == 'main' ]] || { echo '只允许 main 分支' >&2; exit 3; }
+[[ -z "$(git -C "$TARGET" status --porcelain)" ]] || { echo '原有 Git 仓库有未提交改动，请先处理。' >&2; exit 3; }
+git -C "$TARGET" fetch origin main --tags
+[[ "$(git -C "$TARGET" rev-parse HEAD)" == "$(git -C "$TARGET" rev-parse origin/main)" ]] || { echo '本地 main 与远程不同步，拒绝覆盖。' >&2; exit 3; }
+if git -C "$TARGET" ls-remote --exit-code --tags origin refs/tags/v1.0.1 >/dev/null 2>&1; then
+    echo '远程 v1.0.1 标签已存在，本脚本不会覆盖已有发布。' >&2
+    exit 3
 fi
-if git remote get-url origin >/dev/null 2>&1; then
-    REMOTE="$(git remote get-url origin)"
-    case "$REMOTE" in
-      "https://github.com/$REPO.git"|"git@github.com:$REPO.git") : ;;
-      *) echo "现有 origin 指向 $REMOTE，拒绝误推送" >&2; exit 4;;
-    esac
-else
-    git remote add origin "https://github.com/$REPO.git"
+# Keep the remote working tree as lean as the current full source bundle.
+# rsync exclusions protect .git, local SDK configuration, credentials and caches.
+echo '===== 目标工作树将同步的文件（含过时文件删除） ====='
+RSYNC_EXCLUDES=(
+    --exclude='.git/' --exclude='.gradle/' --exclude='build/'
+    --exclude='local.properties' --exclude='*.jks' --exclude='*.keystore'
+    --exclude='*.log' --exclude='.env' --exclude='.env.*'
+    --exclude='.idea/' --exclude='__pycache__/'
+)
+rsync -ain --delete "${RSYNC_EXCLUDES[@]}" "$SOURCE/" "$TARGET/" | sed -n '1,160p' 
+printf '\n本次会清理原仓库中不再属于源码包的文件，继续请输入 yes：'
+read -r SYNC_CONFIRM
+[[ "$SYNC_CONFIRM" == 'yes' ]] || { echo '未修改原仓库。'; exit 0; }
+rsync -a --delete "${RSYNC_EXCLUDES[@]}" "$SOURCE/" "$TARGET/"
+# One obsolete first-release-only script must not remain in the Android repo.
+if [[ -f "$TARGET/RETRY_FAILED_RELEASE_6800H.sh" ]]; then
+    rm "$TARGET/RETRY_FAILED_RELEASE_6800H.sh"
 fi
-git add -A
-if ! git diff --cached --quiet; then git commit -m 'Release OpenSSReader Android 1.0.0 with GeckoView and updater'; fi
-git branch -M main
-git push -u origin main
-echo "代码已推送：https://github.com/$REPO"
-required=(OSR_ANDROID_KEYSTORE_BASE64 OSR_ANDROID_KEYSTORE_PASSWORD OSR_ANDROID_KEY_ALIAS OSR_ANDROID_KEY_PASSWORD)
-SECRETS="$(gh secret list -R "$REPO" | awk '{print $1}')"
-missing=()
-for s in "${required[@]}"; do
-    grep -Fxq "$s" <<< "$SECRETS" || missing+=("$s")
-done
-if (( ${#missing[@]} > 0 )); then
-    echo 'GitHub Actions 正式签名尚未设置完整；本次只推送源码，暂不创建正式版 tag。'
-    printf '缺少密钥：%s\n' "${missing[*]}"
-    echo '请执行：bash ./SETUP_RELEASE_SIGNING_6800H.sh ，然后重新运行本脚本。'
+git -C "$TARGET" add -A
+echo '===== 即将提交的改动 ====='
+git -C "$TARGET" diff --cached --stat
+if git -C "$TARGET" diff --cached --quiet; then
+    echo '没有新的源码改动。'
     exit 0
 fi
-if git rev-parse 'refs/tags/v1.0.0' >/dev/null 2>&1; then
-    echo '检测到 v1.0.0 标签已经存在；不会直接重推旧标签（否则会使用旧代码）。'
-    echo '如果上一次 Release 因 lint 失败且尚未正式发布，请使用：'
-    echo '  bash ./RETRY_FAILED_RELEASE_6800H.sh /path/to/existing/git/checkout'
-    exit 0
-fi
-printf '\n即将推送 v1.0.0 触发正式签名构建与公开 Release。\n'
-read -r -p '你已核实正式签名、数据备份，并同意发布吗？输入 yes：' answer
-[[ "$answer" == 'yes' ]] || { echo '未创建发布标签。'; exit 0; }
-echo '发布前再次执行本地 Android 编译及单元测试。'
-bash ./BUILD_ANDROID_6800H.sh
-git tag -a v1.0.0 -m 'OpenSSReader Android 1.0.0'
-git push origin v1.0.0
-echo "已触发：https://github.com/$REPO/actions"
+printf '\n只推送源码至 main，不创建 tag；输入 yes 确认：'
+read -r CONFIRM
+[[ "$CONFIRM" == 'yes' ]] || { echo '未提交、未推送；已复制文件，请自行检查工作树。'; exit 0; }
+git -C "$TARGET" commit -m 'Prepare Android 1.0.1: adaptive shelf, HD covers, tap navigation, compact sections'
+git -C "$TARGET" push origin main
+echo '已推送 main。请先实机验收、等待 CI 通过，再手动创建 v1.0.1 标签。'

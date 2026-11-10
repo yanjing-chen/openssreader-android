@@ -29,8 +29,10 @@ assert 'rescanBookshelf()' not in view.split('fun import(', 1)[1].split('fun cov
 
 assert 'cleanTrashedPdzArtifacts' not in storage
 assert '清理 .fmtrashed' not in ui
-assert 'ModalNavigationDrawer(' not in ui and 'DrawerValue' not in ui
-assert ui.count('LibrarySidebar(books, favorites, labels, activeDownloadCount, section,') == 1
+# Compact screens use the category drawer; expanded screens retain the sidebar.
+assert 'ModalNavigationDrawer(' in ui and 'DrawerValue.Closed' in ui
+assert ui.count('LibrarySidebar(books, favorites, labels, activeDownloadCount, section,') == 2
+assert 'val compact = maxWidth < 600.dp' in ui
 assert 'TAB_SHELF -> {' in ui and 'VerticalDivider()' in ui
 assert 'if (books.isNotEmpty()) IconButton(onClick = openImport)' in ui
 assert 'showToc = !showToc' in ui

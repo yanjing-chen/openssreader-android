@@ -6,7 +6,7 @@ m=(r/'app/src/main/AndroidManifest.xml').read_text()
 u=(r/'app/src/main/java/org/openssreader/android/ReleaseUpdates.kt').read_text()
 ui=(r/'app/src/main/java/org/openssreader/android/MainActivity.kt').read_text()
 g=(r/'app/src/main/java/org/openssreader/android/GeckoBookstore.kt').read_text()
-assert 'versionCode = 10000' in a and 'versionName = "1.0.0"' in a
+assert 'versionCode = 10001' in a and 'versionName = "1.0.1"' in a
 assert 'org.openssreader.android' in a
 assert 'OSR_SIGNING_STORE_FILE' in a and 'signingConfigs' in a
 assert 'REQUEST_INSTALL_PACKAGES' in m and 'FileProvider' in m
@@ -18,4 +18,4 @@ for obsolete in ('超星 PDZ 图书阅读器 · Android 预览版', '超星书�
     'bookshelf 文件夹为每本图书保存一个独立 JSON 小文件',
     '在『书城』中登录并点击下载图书'):
     assert obsolete not in ui+g, obsolete
-print('ANDROID_RELEASE_1_0_CONTRACT=PASS')
+print('ANDROID_RELEASE_1_0_UPDATER_CONTRACT=PASS')
