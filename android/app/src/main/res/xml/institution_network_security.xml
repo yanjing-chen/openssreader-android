@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <!-- Known legacy institution services use HTTP; do not enable cleartext globally. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain>read.sslibrary.com</domain>
+        <domain>bookworld.5read.com</domain>
+        <domain>bfts.5read.com</domain>
+        <domain>nfts.5read.com</domain>
+        <domain>d.chaoxing.com</domain>
+    </domain-config>
+</network-security-config>

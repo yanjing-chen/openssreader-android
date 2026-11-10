@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# OpenSSReader standalone Gradle bootstrap (no wrapper JAR shipped).
+# The Gradle distribution and SHA256 always come from gradle-wrapper.properties.
+# HTTPS host/path are strictly limited to official services.gradle.org distributions.
+set -Eeuo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROPS="$ROOT/gradle/wrapper/gradle-wrapper.properties"
+[[ -r "$PROPS" ]] || { echo "Missing wrapper properties: $PROPS" >&2; exit 2; }
+RAW_URL="$(sed -n 's/^distributionUrl=//p' "$PROPS" | tail -n 1)"
+URL="$(printf '%s' "$RAW_URL" | tr -d '\\')"
+SHA="$(sed -n 's/^distributionSha256Sum=//p' "$PROPS" | tail -n 1)"
+if [[ "$URL" =~ ^https://services\.gradle\.org/distributions/gradle-([0-9]+\.[0-9]+\.[0-9]+)-bin\.zip$ ]]; then
+    VERSION="${BASH_REMATCH[1]}"
+else
+    echo "Unsupported or unsafe Gradle distribution URL in $PROPS: $URL" >&2
+    exit 2
+fi
+[[ "$SHA" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "Invalid SHA256 in $PROPS" >&2; exit 2; }
+CACHE="${GRADLE_USER_HOME:-${HOME}/.gradle}/osr-bootstrap"
+EXE="$CACHE/gradle-$VERSION/bin/gradle"
+if [[ ! -x "$EXE" ]]; then
+    command -v curl >/dev/null || { echo '需要安装 curl' >&2; exit 2; }
+    command -v unzip >/dev/null || { echo '需要安装 unzip' >&2; exit 2; }
+    mkdir -p "$CACHE"
+    ZIP="$CACHE/gradle-$VERSION-bin.zip"
+    if [[ ! -f "$ZIP" ]] || ! (cd "$CACHE" && printf '%s  %s\n' "$SHA" "gradle-$VERSION-bin.zip" | sha256sum -c - >/dev/null); then
+        rm -f "$ZIP"
+        curl --proto '=https' --tlsv1.2 -fL --retry 2 --connect-timeout 15 \
+          "$URL" -o "$ZIP"
+        (cd "$CACHE" && printf '%s  %s\n' "$SHA" "gradle-$VERSION-bin.zip" | sha256sum -c -)
+    fi
+    unzip -oq "$ZIP" -d "$CACHE"
+fi
+cd "$ROOT"
+exec "$EXE" "$@"

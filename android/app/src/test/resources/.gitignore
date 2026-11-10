@@ -1,0 +1,4 @@
+# These two entirely synthetic fixtures are safe to version-control when approved.
+# The root .gitignore intentionally excludes all ordinary real *.pdz books.
+!synthetic_direct_jpeg.pdz
+!synthetic_unsupported_page.pdz
