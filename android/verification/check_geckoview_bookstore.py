@@ -6,7 +6,7 @@ source=(r/'app/src/main/java/org/openssreader/android/MainActivity.kt').read_tex
 g=(r/'app/src/main/java/org/openssreader/android/GeckoBookstore.kt').read_text()
 d=(r/'app/build.gradle.kts').read_text()
 settings=(r/'settings.gradle.kts').read_text()
-assert 'versionCode = 10001' in d
+assert 'versionCode = 10003' in d
 assert 'org.mozilla.geckoview:geckoview:159.0.20261022150525' in d
 assert 'https://maven.mozilla.org/maven2/' in settings
 assert 'androidx.webkit:webkit:' not in d

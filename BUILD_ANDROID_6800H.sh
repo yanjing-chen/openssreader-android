@@ -5,8 +5,10 @@ cd "$ROOT/android"
 python3 verification/check_source_cleanliness.py
 python3 verification/check_geckoview_toolchain.py
 python3 verification/check_geckoview_bookstore.py
+python3 verification/check_gecko_new_window.py
 python3 verification/check_bookshelf_integrity.py
 python3 verification/check_mobile_adaptive.py
+python3 verification/check_shelf_preferences.py
 python3 verification/check_reader_tap_navigation.py
 python3 verification/check_compact_section_menu.py
 python3 verification/check_hd_covers.py
@@ -20,7 +22,7 @@ fi
 SDK="${SDK:-$HOME/Android/Sdk}"
 [[ -f "$SDK/platforms/android-37.0/android.jar" ]] || { echo "Missing Android 37.0 platform: $SDK" >&2; exit 3; }
 export ANDROID_HOME="$SDK"
-LOG="$ROOT/android/build-android-1.0.1.log"
+LOG="$ROOT/android/build-android-1.0.3.log"
 set +e
 bash ./gradlew --version 2>&1 | tee "$LOG"
 check_status=${PIPESTATUS[0]}

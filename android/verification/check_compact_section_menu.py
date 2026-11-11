@@ -15,9 +15,13 @@ assert 'BookSection("目录（第' not in engine
 assert 'BookSection("正文（第' not in engine
 for marker in (
     'currentSectionTitle',
-    'modifier = Modifier.widthIn(min = 108.dp)',
+    'modifier = Modifier.width(96.dp).height(38.dp)',
+    'contentAlignment = Alignment.Center',
+    'textAlign = TextAlign.Center',
+    'Modifier.align(Alignment.CenterEnd)',
+    'modifier = Modifier.width(112.dp)',
+    'contentPadding = PaddingValues(horizontal = 4.dp)',
     'modifier = Modifier.height(40.dp)',
-    'contentPadding = PaddingValues(horizontal = 12.dp)',
     'ReaderSpread.anchor(section.zeroBasedPage, maxPage)',
     'section.zeroBasedPage',
 ):

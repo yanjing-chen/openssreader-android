@@ -1,28 +1,29 @@
-# OpenSSReader Android
+# OpenSSReader Android 1.0.3
 
-Native Android PDZ bookshelf and Firefox GeckoView integrated bookstore. This repository is the standalone Android application, not the Linux AppImage project.
+OpenSSReader Android is an independent Android project with an embedded Mozilla GeckoView bookstore, native PDZ downloading and decoding, local PDF reading and a responsive bookshelf. Package ID: `org.openssreader.android`; minimum Android API 26.
 
-**Version:** 1.0.1 · **Package:** `org.openssreader.android` · **Minimum Android:** API 26.
+## 1.0.3
 
-## Build (Ubuntu 26.04, JDK 17)
+- Verified on-device: GeckoView native multiple tabs support SSLibrary search-result book-title/cover links that open a new browsing context. The original search results tab remains available, and `book://` links still enter the existing downloader.
+- Phone/tablet adaptive bookshelf, adjustable high-resolution covers, eight book sorting choices, compact reader section menu, and tap-to-turn-page navigation are included.
+- App Settings provides GitHub Release update checks, verified APK download, and About.
 
-Install Android SDK Platform 37.0 and Build Tools 36.0.0:
+## Build
+
+Requirements: Android SDK Platform 37.0, Build Tools 36.0.0, JDK 17; Gradle 9.3.1 is bootstrapped by the project. Node.js is not required.
 
 ```bash
-android sdk install platforms/android-37.0 build-tools/36.0.0
 bash ./BUILD_ANDROID_6800H.sh
 ```
 
-APK: `android/app/build/outputs/apk/debug/app-debug.apk` (developer debug build, **not** the published release signing certificate).
+## GitHub publication — from your own PC
 
-## CI and release
+Do not move the signing keystore or secrets into the repository. Use the existing git checkout (with `.git`) as the target and run these scripts from this unpacked source directory:
 
-A push or pull request builds and tests the debug APK using GitHub Actions. Pushing tag `v1.0.1` builds a **release-signed** APK and publishes it in GitHub Releases. The release signing keystore is required and kept only in GitHub Actions secrets; never commit it.
+```bash
+bash ./PUSH_FROM_6800H.sh /path/to/existing/openssreader-android
+# After the main-branch Android APK CI is green:
+bash ./RELEASE_1_0_3_6800H.sh /path/to/existing/openssreader-android
+```
 
-Read [RELEASE_GUIDE_CN.md](RELEASE_GUIDE_CN.md) before publishing and migrating from an older debug APK. The installed-app update checker uses the public GitHub Releases API and checks SHA-256 before handing the APK to Android's system package installer.
-
-The OpenSSReader app only downloads books through legitimate institution web authorization and preserves the existing `book://` download queue. No institution credentials are recorded by the app.
-
-## High-resolution bookshelf covers (1.0.1)
-
-Bookshelf covers use density-aware 800–1600 physical-pixel images. A real PDZ cover is preferred; a first PDF page is used only if an embedded cover is absent. When no embedded cover exists, the first PDF page (or a directly accessible JPEG/HH04 PDZ page while conversion runs) is used. PNG-lossless cache files are stored under the app-private cache directory, with a 96 MiB bound. Source PDZ and PDF files remain byte-for-byte unchanged. For encrypted or bilevel-only PDZ without an embedded cover, a high-res preview requires successful PDZ-to-PDF conversion first.
+The tag `v1.0.3` triggers `.github/workflows/release.yml`, which creates an APK signed using the existing production signing secrets and includes the SHA-256 checksum. Existing release tags are never rewritten. Do not replace the keystore. Consult [RELEASE_GUIDE_CN.md](RELEASE_GUIDE_CN.md) for details and installation-signature cautions.

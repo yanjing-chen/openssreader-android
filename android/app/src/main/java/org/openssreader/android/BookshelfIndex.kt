@@ -20,6 +20,7 @@ object BookshelfIndex {
                 put("year", b.year ?: JSONObject.NULL); put("ssid", b.ssid)
                 put("totalPages", b.totalPages ?: JSONObject.NULL)
                 put("lastPage", b.lastPage); put("lastOpened", b.lastOpened)
+                put("addedAt", b.addedAt); put("legacyOrder", b.legacyOrder)
                 put("publicPdzName", b.publicPdzName ?: JSONObject.NULL)
                 put("publicPdfName", b.publicPdfName ?: JSONObject.NULL)
             })
@@ -57,6 +58,8 @@ object BookshelfIndex {
                     totalPages = if (obj.isNull("totalPages")) null else obj.optInt("totalPages"),
                     lastPage = obj.optInt("lastPage", 0).coerceAtLeast(0),
                     lastOpened = obj.optLong("lastOpened", 0).coerceAtLeast(0L),
+                    addedAt = obj.optLong("addedAt", 0).coerceAtLeast(0L),
+                    legacyOrder = obj.optLong("legacyOrder", 0).coerceAtLeast(0L),
                     publicPdzName = pdz, publicPdfName = pdf)
             }
         }

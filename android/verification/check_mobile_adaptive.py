@@ -16,8 +16,9 @@ for required in (
     'Text("分类")',
     'maxLines = 1, overflow = TextOverflow.Ellipsis',
     'Text("${sectionBooks.size} 本"',
-    'GridCells.Adaptive(minSize =',
-    'coverWidth.coerceAtMost(140)',
+    'GridCells.Fixed(count)',
+    'BookshelfGridSizing.columns(availableDp, coverWidth)',
+    'modifier = Modifier.widthIn(max = coverWidth.dp).fillMaxWidth()',
     'isAppearanceLightStatusBars = true',
     'isAppearanceLightNavigationBars = true',
     'singleLine = true',
@@ -29,7 +30,7 @@ for required in (
 assert 'val wideSidebar = maxWidth >= 840.dp' in s
 assert 'modifier = Modifier.width(if (wideSidebar) 265.dp else 208.dp)' in s
 assert 'val landscape =' not in s, 'sidebar must not select width from orientation'
-assert 'search, { search = it }, descending, grid,' in s
+assert 'search, { search = it }, bookshelfSort, grid,' in s
 assert s.count('private fun BookshelfContent(') == 1
 assert s.count('private fun LibrarySidebar(') == 1
 assert 'GeckoBookstorePage(state = bookstoreSession' in s

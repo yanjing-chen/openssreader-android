@@ -45,7 +45,13 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
     val rootStorageGranted = _rootStorageGranted.asStateFlow()
     private val engine = BookEngine(store)
     private val coverRepository = ShelfCoverRepository(store)
-    private val _books = MutableStateFlow(store.load())
+    private val _books = MutableStateFlow(store.load().let { restored ->
+        restored.mapIndexed { index, book ->
+            if (book.addedAt <= 0L && book.legacyOrder <= 0L)
+                book.copy(legacyOrder = (restored.size - index).toLong())
+            else book
+        }
+    })
     val books = _books.asStateFlow()
     private val _transfers = MutableStateFlow(store.loadTasks())
     private val downloadJobs = ConcurrentHashMap<String, Job>()
@@ -58,8 +64,12 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
     private val prefs = application.getSharedPreferences("display-v1", 0)
     private val _grid = MutableStateFlow(prefs.getBoolean("grid", true))
     val grid = _grid.asStateFlow()
-    private val _sortDescending = MutableStateFlow(prefs.getBoolean("year-desc", true))
-    val sortDescending = _sortDescending.asStateFlow()
+    // Migrate the old year-desc preference without changing its effective order.
+    private val _bookshelfSort = MutableStateFlow(
+        BookshelfSort.parse(prefs.getString("bookshelf-sort", null))
+            ?: if (prefs.getBoolean("year-desc", true)) BookshelfSort.YEAR_DESC else BookshelfSort.YEAR_ASC
+    )
+    val bookshelfSort = _bookshelfSort.asStateFlow()
     private val _readerLayout = MutableStateFlow(
         prefs.getString("reader-layout", null)?.let(ReaderLayout::parse)
             ?: if (prefs.getBoolean("continuous", false)) ReaderLayout.CONTINUOUS else ReaderLayout.SINGLE
@@ -205,7 +215,10 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
     fun message(text: String) { _message.value = text }
     fun dismissMessage() { _message.value = "" }
     fun setGrid(isGrid: Boolean) { _grid.value = isGrid; prefs.edit().putBoolean("grid", isGrid).apply() }
-    fun setSort(desc: Boolean) { _sortDescending.value = desc; prefs.edit().putBoolean("year-desc", desc).apply() }
+    fun setSort(mode: BookshelfSort) {
+        _bookshelfSort.value = mode
+        prefs.edit().putString("bookshelf-sort", mode.name).apply()
+    }
     fun setReaderLayout(layout: ReaderLayout) {
         _readerLayout.value = layout
         _continuous.value = layout == ReaderLayout.CONTINUOUS
@@ -227,7 +240,8 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
         // Admissions are serialized with bookshelf scans, so opening a PDZ
         // while startup restoration runs cannot erase the newly imported book.
         scanLock.withLock {
-            _books.update { old -> listOf(book) + old.filterNot { it.id == book.id } }
+            val added = if (book.addedAt > 0L) book else book.copy(addedAt = System.currentTimeMillis())
+            _books.update { old -> listOf(added) + old.filterNot { it.id == added.id } }
             store.save(_books.value)
             if (store.publicFiles.canUseRootDefault() ||
                 store.publicFiles.isCustom(PublicBookStorage.Kind.BOOKSHELF)) {
@@ -239,7 +253,12 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
         }
     }
     private fun revise(book: ShelfBook) {
-        _books.update { current -> current.map { if (it.id == book.id) book else it } }
+        _books.update { current -> current.map { currentBook ->
+            if (currentBook.id == book.id) book.copy(
+                addedAt = book.addedAt.takeIf { it > 0L } ?: currentBook.addedAt,
+                legacyOrder = book.legacyOrder.takeIf { it > 0L } ?: currentBook.legacyOrder)
+            else currentBook
+        } }
         store.save(_books.value)
         scheduleIndexSync()
     }
@@ -549,8 +568,10 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
                     // PDZ/PDF files; migrate to independent per-book JSON files.
                     indexWriteLock.withLock { public.migrateLegacyIndexIfPresent() }
                     val available = mutableListOf<ShelfBook>()
+                    val previous = _books.value.associateBy { it.id }
+                    val indexedBooks = snapshot.books.distinctBy { it.id }
                     var missing = 0
-                    for (book in snapshot.books.distinctBy { it.id }) {
+                    for ((index, book) in indexedBooks.withIndex()) {
                         val pdzPresent = book.publicPdzName?.let { name ->
                             public.sourceForReading(PublicBookStorage.Kind.PDZ, name,
                                 store.bookFolder)?.isFile == true
@@ -560,10 +581,15 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
                                 store.pdfFolder)?.isFile == true
                         } ?: false
                         if (!pdzPresent && !pdfPresent) { missing++; continue }
+                        val earlier = previous[book.id]
                         available += book.copy(
                             filename = if (book.type == "PDZ") book.publicPdzName!!
                                 else book.publicPdfName!!,
-                            pdfCacheFile = null)
+                            pdfCacheFile = null,
+                            addedAt = book.addedAt.takeIf { it > 0L } ?: earlier?.addedAt ?: 0L,
+                            legacyOrder = book.legacyOrder.takeIf { it > 0L }
+                                ?: earlier?.legacyOrder?.takeIf { it > 0L }
+                                ?: (indexedBooks.size - index).toLong())
                     }
                     // Existing v2 per-book files are authoritative, even if there
                     // are zero records. Never union them with stale private records.

@@ -63,6 +63,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -215,7 +216,7 @@ private fun AppScreen(model: OsrViewModel, bookstoreSession: GeckoBookstoreState
     val rootAccess by model.rootStorageGranted.collectAsState()
     val tasks by model.transfers.collectAsState()
     val grid by model.grid.collectAsState()
-    val descending by model.sortDescending.collectAsState()
+    val bookshelfSort by model.bookshelfSort.collectAsState()
     val coverWidth by model.coverWidth.collectAsState()
     val fields by model.fields.collectAsState()
     val notification by model.message.collectAsState()
@@ -379,7 +380,7 @@ private fun AppScreen(model: OsrViewModel, bookstoreSession: GeckoBookstoreState
                                 }
                             ) {
                                 BookshelfContent(model, books, favorites, labels, section,
-                                    search, { search = it }, descending, grid,
+                                    search, { search = it }, bookshelfSort, grid,
                                     coverWidth, fields, openImport,
                                     openBook = { activeBookId = it }, export = export,
                                     compact = true,
@@ -399,7 +400,7 @@ private fun AppScreen(model: OsrViewModel, bookstoreSession: GeckoBookstoreState
                                     modifier = Modifier.width(if (wideSidebar) 265.dp else 208.dp))
                                 VerticalDivider()
                                 BookshelfContent(model, books, favorites, labels, section,
-                                    search, { search = it }, descending, grid,
+                                    search, { search = it }, bookshelfSort, grid,
                                     coverWidth, fields, openImport,
                                     openBook = { activeBookId = it }, export = export,
                                     compact = false, onOpenCategories = {},
@@ -409,7 +410,7 @@ private fun AppScreen(model: OsrViewModel, bookstoreSession: GeckoBookstoreState
                     }
                 }
                 TAB_DOWNLOAD -> DownloadPage(tasks, model)
-                TAB_SETTINGS -> SettingsPage(grid, descending, fields, model, chooseStorage, requestFileAccess)
+                TAB_SETTINGS -> SettingsPage(grid, bookshelfSort, fields, model, chooseStorage, requestFileAccess)
             }
         }
     }
@@ -421,7 +422,7 @@ private fun BookshelfContent(
     model: OsrViewModel,
     books: List<ShelfBook>, favorites: Set<String>, labels: List<ShelfLabel>,
     section: String, search: String, onSearchChange: (String) -> Unit,
-    descending: Boolean, grid: Boolean, coverWidth: Int, fields: Set<String>,
+    bookshelfSort: BookshelfSort, grid: Boolean, coverWidth: Int, fields: Set<String>,
     openImport: () -> Unit, openBook: (String) -> Unit, export: (ShelfBook) -> Unit,
     compact: Boolean, onOpenCategories: () -> Unit,
     modifier: Modifier = Modifier
@@ -444,9 +445,7 @@ private fun BookshelfContent(
     val filtered = sectionBooks.filter { search.isBlank() ||
         it.title.contains(search, true) || it.creator.contains(search, true) ||
             it.publisher.contains(search, true) || it.ssid.contains(search) }
-    val sorted = if (descending)
-        filtered.sortedWith(compareBy<ShelfBook> { it.year == null }.thenByDescending { it.year ?: 0 })
-    else filtered.sortedWith(compareBy<ShelfBook> { it.year == null }.thenBy { it.year ?: 0 })
+    val sorted = remember(filtered, bookshelfSort) { BookshelfSorting.sorted(filtered, bookshelfSort) }
     Column(modifier.fillMaxHeight()) {
         Row(Modifier.fillMaxWidth().padding(vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically) {
@@ -479,25 +478,32 @@ private fun BookshelfContent(
             if (books.isEmpty()) EmptyShelf(openImport)
             else Text("当前分类没有图书", Modifier.padding(20.dp))
         } else if (grid) {
-            // Preserve the cover size preference on tablets. On compact screens,
-            // cap the minimum at 140dp so standard phones can show two book covers.
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize =
-                    (if (compact) coverWidth.coerceAtMost(140) else coverWidth).dp),
-                modifier = Modifier.fillMaxSize(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                contentPadding = PaddingValues(bottom = 24.dp)
-            ) {
-                items(sorted, key = { it.id }) { book ->
-                    ShelfGridCard(model, book, fields,
-                        open = { openBook(book.id) }, export = export)
+            // The slider changes each cover's actual dp width immediately.
+            // GridCells.Adaptive alone stretches its cells, which used to make
+            // most slider positions look identical, particularly on phones.
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val availableDp = maxWidth.value
+                val count = BookshelfGridSizing.columns(availableDp, coverWidth)
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(count),
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp)
+                ) {
+                    items(sorted, key = { it.id }) { book ->
+                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+                            ShelfGridCard(model, book, fields,
+                                open = { openBook(book.id) }, export = export,
+                                modifier = Modifier.widthIn(max = coverWidth.dp).fillMaxWidth())
+                        }
+                    }
                 }
             }
         } else {
             LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(sorted, key = { it.id }) { book ->
-                    ShelfListRow(model, book, fields,
+                    ShelfListRow(model, book, fields, coverWidth,
                         open = { openBook(book.id) }, export = export)
                 }
             }
@@ -715,8 +721,8 @@ private fun BookFacts(book: ShelfBook, selected: Set<String>) {
 
 @Composable
 private fun ShelfGridCard(model: OsrViewModel, book: ShelfBook, fields: Set<String>, open: () -> Unit,
-    export: (ShelfBook) -> Unit) {
-    Column(Modifier.fillMaxWidth().clickable(onClick = open).padding(4.dp)) {
+    export: (ShelfBook) -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier.clickable(onClick = open).padding(4.dp)) {
         ShelfCover(model, book, Modifier.fillMaxWidth().aspectRatio(0.72f))
         Spacer(Modifier.height(6.dp))
         Text(book.title, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium,
@@ -731,11 +737,13 @@ private fun ShelfGridCard(model: OsrViewModel, book: ShelfBook, fields: Set<Stri
 }
 
 @Composable
-private fun ShelfListRow(model: OsrViewModel, book: ShelfBook, fields: Set<String>, open: () -> Unit,
-    export: (ShelfBook) -> Unit) {
+private fun ShelfListRow(model: OsrViewModel, book: ShelfBook, fields: Set<String>, coverWidth: Int,
+    open: () -> Unit, export: (ShelfBook) -> Unit) {
+    val thumbnailWidth = (coverWidth * 70f / 156f).toInt().coerceIn(50, 110)
     Card(Modifier.fillMaxWidth().clickable(onClick = open)) {
         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.Top) {
-            ShelfCover(model, book, Modifier.size(width = 70.dp, height = 100.dp))
+            ShelfCover(model, book, Modifier.size(width = thumbnailWidth.dp,
+                height = (thumbnailWidth * 10 / 7).dp))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(book.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -840,7 +848,7 @@ private fun DownloadPage(tasks: List<TransferTask>, model: OsrViewModel) {
 }
 
 @Composable
-private fun SettingsPage(grid: Boolean, descending: Boolean, fields: Set<String>, model: OsrViewModel,
+private fun SettingsPage(grid: Boolean, bookshelfSort: BookshelfSort, fields: Set<String>, model: OsrViewModel,
     chooseStorage: (PublicBookStorage.Kind) -> Unit, requestFileAccess: () -> Unit) {
     val rootAccess by model.rootStorageGranted.collectAsState()
     val readerLayout by model.readerLayout.collectAsState()
@@ -861,9 +869,34 @@ private fun SettingsPage(grid: Boolean, descending: Boolean, fields: Set<String>
             Text("网格封面视图", modifier = Modifier.weight(1f))
             Switch(grid, onCheckedChange = model::setGrid)
         }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("出版年份降序（新→旧）", modifier = Modifier.weight(1f))
-            Switch(descending, onCheckedChange = model::setSort)
+        var sortMenuExpanded by remember { mutableStateOf(false) }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("书架图书排序", modifier = Modifier.weight(1f))
+            Box {
+                FilledTonalButton(onClick = { sortMenuExpanded = true },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+                    Text(bookshelfSort.concise, maxLines = 1)
+                    Icon(Icons.Default.ArrowDropDown, "选择书架排序方式",
+                        modifier = Modifier.size(18.dp))
+                }
+                DropdownMenu(expanded = sortMenuExpanded,
+                    onDismissRequest = { sortMenuExpanded = false }) {
+                    BookshelfSort.entries.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option.title) },
+                            leadingIcon = {
+                                RadioButton(selected = option == bookshelfSort,
+                                    onClick = null)
+                            },
+                            onClick = {
+                                model.setSort(option)
+                                sortMenuExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
         }
         Text("封面大小：${coverWidth} dp", style = MaterialTheme.typography.bodyMedium)
         Slider(value = coverWidth.toFloat(), onValueChange = { model.setCoverWidth(it.toInt()) },
@@ -1087,28 +1120,43 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
                         tonalElevation = 1.dp,
                         modifier = Modifier.clickable { sectionMenu = true }
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        // Center the section title within the whole control, not merely
+                        // within the area left over after the dropdown arrow.
+                        Box(
+                            modifier = Modifier.width(96.dp).height(38.dp),
+                            contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 currentSectionTitle,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
                                 style = MaterialTheme.typography.labelLarge
                             )
-                            Icon(Icons.Default.ArrowDropDown, contentDescription = "前言／目录／正文跳转", modifier = Modifier.size(18.dp))
+                            Icon(
+                                Icons.Default.ArrowDropDown,
+                                contentDescription = "前言／目录／正文跳转",
+                                modifier = Modifier.align(Alignment.CenterEnd)
+                                    .padding(end = 3.dp).size(16.dp)
+                            )
                         }
                     }
                     DropdownMenu(
                         expanded = sectionMenu,
                         onDismissRequest = { sectionMenu = false },
-                        modifier = Modifier.widthIn(min = 108.dp)
+                        modifier = Modifier.width(112.dp)
                     ) {
                         validSections.forEach { section ->
                             DropdownMenuItem(
-                                text = { Text(section.title, style = MaterialTheme.typography.bodyMedium) },
+                                text = {
+                                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                        Text(
+                                            section.title,
+                                            textAlign = TextAlign.Center,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+                                },
                                 onClick = {
                                     page = if (spread) ReaderSpread.anchor(section.zeroBasedPage, maxPage)
                                            else section.zeroBasedPage
@@ -1117,7 +1165,7 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
                                     sectionMenu = false
                                 },
                                 modifier = Modifier.height(40.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp)
+                                contentPadding = PaddingValues(horizontal = 4.dp)
                             )
                         }
                     }

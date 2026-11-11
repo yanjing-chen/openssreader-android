@@ -10,7 +10,7 @@ all_code='\n'.join(p.read_text(encoding='utf-8') for p in files)
 for required in ('PdzCatalogReader','PdzContentsReader','BookMetadataReader',
                  'PdzDirectJpegConverter','CompositePhotoPage','addCompositePage','PdfRenderer','LosslessJpegPdf','Hh04JpegDecoder',
                  'BookNames.pdzName','BwPdgDecoder','OuterPageRecovery','PdzAuthorization','Hh00EmbeddedImage','LinearProgressIndicator','takeIf','OpenDocument',
-                 'CreateDocument','UnsupportedPdzPages','GridCells.Adaptive'):
+                 'CreateDocument','UnsupportedPdzPages','GridCells.Fixed'):
     assert required in all_code, required
 for forbidden in ('Gtk.PrintOperation','print_worker','com.google.firebase','android.permission.MANAGE_EXTERNAL_STORAGE',
                   'READ_EXTERNAL_STORAGE','WRITE_EXTERNAL_STORAGE'):

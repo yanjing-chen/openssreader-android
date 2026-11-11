@@ -12,7 +12,7 @@ assert 'org.jetbrains.kotlin:kotlin-stdlib:2.4.20' in a
 assert 'id("org.jetbrains.kotlin.android")' not in a
 assert 'android.builtInKotlin=false' not in (r/'gradle.properties').read_text()
 assert 'version = release(37)' in a and 'minorApiLevel = 0' in a and 'targetSdk = 35' in a and 'minSdk = 26' in a
-assert 'versionCode = 10001' in a
+assert 'versionCode = 10003' in a
 assert 'geckoview:159.0.20261022150525' in a
 assert 'gradle-9.3.1-bin.zip' in w
 assert 'distributionSha256Sum=b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06' in w

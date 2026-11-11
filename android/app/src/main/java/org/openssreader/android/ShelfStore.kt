@@ -19,6 +19,10 @@ data class ShelfBook(
     val totalPages: Int? = null,
     val lastPage: Int = 0,
     val lastOpened: Long = 0L,
+    // Time of addition to OpenSSReader. Zero means the legacy record had no date.
+    val addedAt: Long = 0L,
+    // Order of legacy books when date is unknown; not presented as a real date.
+    val legacyOrder: Long = 0L,
     val pdfCacheFile: String? = null,
     val decodeMessage: String = "",
     // File-manager-visible copies, durable across uninstall. Names only, no absolute paths.
@@ -68,6 +72,8 @@ class ShelfStore(context: Context) {
                 ssid = obj.optString("ssid"),
                 totalPages = if (obj.isNull("totalPages")) null else obj.optInt("totalPages"),
                 lastPage = obj.optInt("lastPage", 0), lastOpened = obj.optLong("lastOpened", 0),
+                addedAt = obj.optLong("addedAt", 0L).coerceAtLeast(0L),
+                legacyOrder = obj.optLong("legacyOrder", 0L).coerceAtLeast(0L),
                 pdfCacheFile = obj.optString("pdfCacheFile").takeUnless { it.isBlank() || it == "null" },
                 decodeMessage = obj.optString("decodeMessage"),
                 publicPdzName = obj.optString("publicPdzName").takeIf { it.isNotBlank() && it != "null" },
@@ -84,7 +90,9 @@ class ShelfStore(context: Context) {
                 put("title", b.title); put("creator", b.creator); put("publisher", b.publisher)
                 put("year", b.year ?: JSONObject.NULL); put("ssid", b.ssid)
                 put("totalPages", b.totalPages ?: JSONObject.NULL); put("lastPage", b.lastPage)
-                put("lastOpened", b.lastOpened); put("pdfCacheFile", b.pdfCacheFile ?: JSONObject.NULL)
+                put("lastOpened", b.lastOpened)
+                put("addedAt", b.addedAt); put("legacyOrder", b.legacyOrder)
+                put("pdfCacheFile", b.pdfCacheFile ?: JSONObject.NULL)
                 put("decodeMessage", b.decodeMessage)
                 put("publicPdzName", b.publicPdzName ?: JSONObject.NULL)
                 put("publicPdfName", b.publicPdfName ?: JSONObject.NULL)

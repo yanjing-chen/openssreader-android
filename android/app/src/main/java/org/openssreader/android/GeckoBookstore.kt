@@ -8,6 +8,9 @@ import android.util.Log
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -46,38 +49,70 @@ private object GeckoEngine {
     ).also { runtime = it }
 }
 
-/** Activity-owned browser state. A Compose tab switch only detaches the view;
- * the GeckoSession stays open, retaining real DOM, navigation and form state.
- * Screen rotation is handled by MainActivity.configChanges. */
-internal class GeckoBookstoreState {
-    var mainSession: GeckoSession? = null
-    var popupSession by mutableStateOf<GeckoSession?>(null)
-    var mainView: GeckoView? = null
-    var popupView: GeckoView? = null
-    var loading by mutableStateOf(true)
+/** Each tab owns a GeckoSession and its navigation state. Sessions are kept
+ * alive across tab switches; exactly one GeckoView is attached at a time.
+ * The root search page is never replaced by an SSLibrary detail popup. */
+internal class BookstoreTab(
+    val id: Int,
+    val session: GeckoSession,
+    val parentId: Int?,
+    val root: Boolean
+) {
+    var title by mutableStateOf(if (root) "书城首页" else "图书详情")
+    var loading by mutableStateOf(!root)
     var progress by mutableIntStateOf(0)
     var canBack by mutableStateOf(false)
     var canForward by mutableStateOf(false)
-    var mainCanBack = false
-    var mainCanForward = false
     var isLoginPage by mutableStateOf(false)
     var errorMessage by mutableStateOf<String?>(null)
+}
+
+/** Activity-owned session list, independent of the app's bottom navigation. */
+internal class GeckoBookstoreState {
+    val tabs = mutableStateListOf<BookstoreTab>()
+    var selectedTabId by mutableIntStateOf(0)
+    var browserView: GeckoView? = null
     var desktopMode by mutableStateOf(true)
+    private var nextId = 1
 
-    fun active(): GeckoSession? = popupSession ?: mainSession
+    fun tabFor(session: GeckoSession): BookstoreTab? = tabs.firstOrNull { it.session === session }
+    fun activeTab(): BookstoreTab? = tabs.firstOrNull { it.id == selectedTabId } ?: tabs.firstOrNull()
+    fun active(): GeckoSession? = activeTab()?.session
+    val isLoginPage: Boolean get() = activeTab()?.isLoginPage == true
+    fun root(): BookstoreTab? = tabs.firstOrNull { it.root }
 
-    fun closePopup() {
-        val old = popupSession
-        popupSession = null
-        popupView?.let { view ->
-            runCatching { view.releaseSession() }
-            (view.parent as? ViewGroup)?.removeView(view)
+    fun installRoot(session: GeckoSession): BookstoreTab {
+        root()?.let { return it }
+        val tab = BookstoreTab(0, session, null, true)
+        tabs.add(tab)
+        selectedTabId = tab.id
+        return tab
+    }
+
+    fun addChild(session: GeckoSession, parentId: Int?): BookstoreTab {
+        val child = BookstoreTab(nextId++, session, parentId, false)
+        tabs.add(child)
+        selectedTabId = child.id
+        Log.i(GECKO_LOG_TAG, "tab_open id=${child.id} count=${tabs.size}")
+        return child
+    }
+
+    fun selectTab(id: Int) {
+        if (tabs.any { it.id == id }) selectedTabId = id
+    }
+
+    fun closeTab(id: Int) {
+        val tab = tabs.firstOrNull { it.id == id && !it.root } ?: return
+        val wasSelected = selectedTabId == id
+        // An active tab must be detached before its GeckoSession is closed.
+        if (browserView?.session === tab.session) runCatching { browserView?.releaseSession() }
+        tabs.remove(tab)
+        if (tab.session.isOpen) runCatching { tab.session.close() }
+        if (wasSelected) {
+            val parentStillOpen = tabs.any { it.id == tab.parentId }
+            selectedTabId = if (parentStillOpen) tab.parentId!! else root()?.id ?: 0
         }
-        popupView = null
-        if (old != null) runCatching { if (old.isOpen) old.close() }
-        canBack = mainCanBack
-        canForward = mainCanForward
-        isLoginPage = false
+        Log.i(GECKO_LOG_TAG, "tab_close id=$id count=${tabs.size}")
     }
 
     fun changeDesktopMode(enabled: Boolean) {
@@ -87,32 +122,33 @@ internal class GeckoBookstoreState {
             else GeckoSessionSettings.USER_AGENT_MODE_MOBILE
         val viewport = if (enabled) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
             else GeckoSessionSettings.VIEWPORT_MODE_MOBILE
-        listOfNotNull(mainSession, popupSession).forEach {
-            it.settings.setUserAgentMode(agent)
-            it.settings.setViewportMode(viewport)
-            it.reload()
+        tabs.forEach { tab ->
+            tab.session.settings.setUserAgentMode(agent)
+            tab.session.settings.setViewportMode(viewport)
+            tab.session.reload()
         }
     }
 
     fun release() {
-        closePopup()
-        mainView?.let { view ->
+        browserView?.let { view ->
             runCatching { view.releaseSession() }
             (view.parent as? ViewGroup)?.removeView(view)
         }
-        mainView = null
-        mainSession?.let { runCatching { if (it.isOpen) it.close() } }
-        mainSession = null
+        browserView = null
+        tabs.forEach { tab -> runCatching { if (tab.session.isOpen) tab.session.close() } }
+        tabs.clear()
+        selectedTabId = 0
     }
 }
 
-/** No JavaScript injection. No custom viewport tags. No CSS movement of login
- * fields. Book links alone are delegated to the existing PDZ download engine. */
+/** Firefox renders the original website; the app only handles native tabs and book://. */
 @Composable
 internal fun GeckoBookstorePage(state: GeckoBookstoreState, onBookLink: (String) -> Unit) {
-    val active = state.active()
-    BackHandler(enabled = state.popupSession != null || state.canBack) {
-        if (state.canBack) active?.goBack() else state.closePopup()
+    val selected = state.activeTab()
+    BackHandler(enabled = (selected?.canBack == true) || (selected != null && !selected.root)) {
+        val tab = state.activeTab()
+        if (tab?.canBack == true) tab.session.goBack()
+        else if (tab != null && !tab.root) state.closeTab(tab.id)
     }
 
     fun isLoginUrl(url: String): Boolean {
@@ -124,14 +160,13 @@ internal fun GeckoBookstorePage(state: GeckoBookstoreState, onBookLink: (String)
 
     fun handOffBook(url: String): Boolean {
         if (!url.startsWith("book://", ignoreCase = true)) return false
-        // Parsing and institution /ssid validation remain the responsibility
-        // of OsrViewModel.acceptBookLink(). Never fetch a book URI in Gecko.
+        // The original tab remains open and usable after the PDZ handoff.
+        Log.i(GECKO_LOG_TAG, "book_handoff tab=${state.activeTab()?.id ?: -1}")
         onBookLink(url)
-        state.closePopup()
         return true
     }
 
-    fun makeSession(context: Context, popup: Boolean): GeckoSession {
+    fun makeSession(context: Context, isRoot: Boolean): GeckoSession {
         val desktop = state.desktopMode
         val s = GeckoSession(GeckoSessionSettings.Builder()
             .userAgentMode(if (desktop) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
@@ -143,9 +178,14 @@ internal fun GeckoBookstorePage(state: GeckoBookstoreState, onBookLink: (String)
             override fun onLoadRequest(session: GeckoSession,
                 request: GeckoSession.NavigationDelegate.LoadRequest): GeckoResult<org.mozilla.geckoview.AllowOrDeny>? {
                 if (handOffBook(request.uri)) return GeckoResult.deny()
-                val scheme = runCatching { Uri.parse(request.uri).scheme?.lowercase() }.getOrNull()
-                return if (scheme == "https" || scheme == "http" || scheme == "about") {
-                    null // Native Gecko navigation, redirects and login are untouched.
+                val parsed = runCatching { Uri.parse(request.uri) }.getOrNull()
+                val scheme = parsed?.scheme?.lowercase()
+                val host = parsed?.host?.take(80).orEmpty()
+                Log.i(GECKO_LOG_TAG, "navigation tab=${state.tabFor(session)?.id ?: -1} " +
+                    "target=${request.target} redirect=${request.isRedirect} gesture=${request.hasUserGesture} " +
+                    "scheme=${scheme ?: "none"} host=$host")
+                return if (scheme == "http" || scheme == "https" || scheme == "about") {
+                    null // Let Firefox follow the website's own navigation normally.
                 } else {
                     Log.w(GECKO_LOG_TAG, "blocked_navigation_scheme=${scheme ?: "none"}")
                     GeckoResult.deny()
@@ -154,72 +194,86 @@ internal fun GeckoBookstorePage(state: GeckoBookstoreState, onBookLink: (String)
 
             override fun onSubframeLoadRequest(session: GeckoSession,
                 request: GeckoSession.NavigationDelegate.LoadRequest): GeckoResult<org.mozilla.geckoview.AllowOrDeny>? {
-                // A frame is not permitted to silently queue a PDZ download.
                 return if (request.uri.startsWith("book://", ignoreCase = true))
                     GeckoResult.deny() else null
             }
 
             override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession>? {
                 if (handOffBook(uri)) return null
-                if (!uri.startsWith("https://", true) && !uri.startsWith("http://", true)
-                    && !uri.isBlank() && uri != "about:blank") return null
-                state.closePopup()
-                // Gecko opens the returned session itself. Never call open() here.
-                val child = makeSession(context, true)
-                state.popupSession = child
-                state.canBack = false
-                state.canForward = false
+                val u = runCatching { Uri.parse(uri) }.getOrNull()
+                val scheme = u?.scheme?.lowercase()
+                if (uri.isNotBlank() && scheme != "http" && scheme != "https" && uri != "about:blank") {
+                    Log.w(GECKO_LOG_TAG, "blocked_new_tab_scheme=${scheme ?: "none"}")
+                    return null
+                }
+                if (state.tabs.size >= 12) {
+                    state.activeTab()?.errorMessage = "已打开过多书城标签，请先关闭不用的图书详情页。"
+                    return null
+                }
+                // Returned GeckoSession MUST be new and unopened; GeckoView
+                // runtime opens it and handles the target URI after the callback.
+                val child = makeSession(context, false)
+                state.addChild(child, state.tabFor(session)?.id)
+                Log.i(GECKO_LOG_TAG, "new_window_created parent=${state.tabFor(session)?.id ?: -1} " +
+                    "scheme=${scheme ?: "none"} host=${u?.host?.take(80).orEmpty()}")
                 return GeckoResult.fromValue(child)
             }
 
             override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
-                if (session === state.mainSession) state.mainCanBack = canGoBack
-                if (session === state.active()) state.canBack = canGoBack
+                state.tabFor(session)?.canBack = canGoBack
             }
             override fun onCanGoForward(session: GeckoSession, canGoForward: Boolean) {
-                if (session === state.mainSession) state.mainCanForward = canGoForward
-                if (session === state.active()) state.canForward = canGoForward
+                state.tabFor(session)?.canForward = canGoForward
             }
             override fun onLoadError(session: GeckoSession, uri: String?,
                 error: WebRequestError): GeckoResult<String>? {
-                // Fallback for browsers that report unknown book:// schemes as
-                // external protocol errors rather than ordinary load requests.
                 if (uri != null && handOffBook(uri)) return null
-                state.loading = false
-                state.errorMessage = "Firefox 网页加载失败。请检查网络、SSL 证书及机构登录状态。"
-                return null // Never bypass certificate failures.
+                val tab = state.tabFor(session)
+                val host = uri?.let { runCatching { Uri.parse(it).host }.getOrNull() }.orEmpty().take(80)
+                Log.w(GECKO_LOG_TAG, "load_error tab=${tab?.id ?: -1} host=$host")
+                tab?.loading = false
+                tab?.errorMessage = "Firefox 网页加载失败，请检查网络、SSL 证书或机构登录状态。"
+                return null // Never bypass a certificate error.
             }
         })
         s.setProgressDelegate(object : GeckoSession.ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
-                state.loading = true
-                state.progress = 0
-                state.errorMessage = null
-                if (session === state.active()) state.isLoginPage = isLoginUrl(url)
+                val tab = state.tabFor(session) ?: return
+                tab.loading = true
+                tab.progress = 0
+                tab.errorMessage = null
+                tab.isLoginPage = isLoginUrl(url)
                 val host = runCatching { Uri.parse(url).host }.getOrNull().orEmpty().take(80)
-                Log.i(GECKO_LOG_TAG, "page_start host=$host popup=$popup")
+                Log.i(GECKO_LOG_TAG, "page_start tab=${tab.id} host=$host")
             }
             override fun onProgressChange(session: GeckoSession, progress: Int) {
-                if (session === state.active()) state.progress = progress
+                state.tabFor(session)?.progress = progress
             }
             override fun onPageStop(session: GeckoSession, success: Boolean) {
-                if (session === state.active()) {
-                    state.loading = false
-                    if (!success && state.errorMessage == null)
-                        state.errorMessage = "Firefox 页面未能完成加载；请检查网络或机构权限。"
-                }
+                val tab = state.tabFor(session) ?: return
+                Log.i(GECKO_LOG_TAG, "page_stop tab=${tab.id} success=$success")
+                tab.loading = false
+                if (!success && tab.errorMessage == null)
+                    tab.errorMessage = "Firefox 页面未能完成加载，请检查网络或机构权限。"
             }
         })
         s.setContentDelegate(object : GeckoSession.ContentDelegate {
+            override fun onTitleChange(session: GeckoSession, title: String?) {
+                val tab = state.tabFor(session) ?: return
+                if (!title.isNullOrBlank()) tab.title = title.take(90)
+            }
             override fun onCloseRequest(session: GeckoSession) {
-                if (session === state.popupSession) state.closePopup()
+                state.tabFor(session)?.let { tab -> if (!tab.root) state.closeTab(tab.id) }
             }
             override fun onCrash(session: GeckoSession) {
-                state.errorMessage = "Firefox 网页进程已停止，请重新打开书城。"
+                val tab = state.tabFor(session) ?: return
+                Log.w(GECKO_LOG_TAG, "process_crash tab=${tab.id}")
+                if (!tab.root) {
+                    state.closeTab(tab.id)
+                    state.activeTab()?.errorMessage = "Firefox 图书详情标签已关闭，原搜索结果仍保留。"
+                } else tab.errorMessage = "Firefox 网页进程已停止，请重新打开书城。"
             }
         })
-        // Native, user-visible JavaScript dialogs. The app never reads or logs
-        // the submitted input; it is returned directly to the browser engine.
         s.setPromptDelegate(object : GeckoSession.PromptDelegate {
             override fun onAlertPrompt(session: GeckoSession,
                 prompt: GeckoSession.PromptDelegate.AlertPrompt
@@ -265,84 +319,95 @@ internal fun GeckoBookstorePage(state: GeckoBookstoreState, onBookLink: (String)
                 return response
             }
         })
-        if (!popup) {
-            s.open(GeckoEngine.get(context))
-        }
+        if (isRoot) s.open(GeckoEngine.get(context))
         return s
     }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            Text(if (state.isLoginPage) "机构登录" else "书城",
+            Text(if (selected?.isLoginPage == true) "机构登录" else "书城",
                 modifier = Modifier.weight(1f), maxLines = 1,
                 overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
-            if (state.popupSession != null) IconButton(onClick = { state.closePopup() }) {
-                Icon(Icons.Default.Close, "关闭登录弹窗")
-            }
-            IconButton(onClick = { state.active()?.goBack() }, enabled = state.canBack) {
+            IconButton(enabled = selected?.canBack == true,
+                onClick = { state.active()?.goBack() }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "后退")
             }
-            IconButton(onClick = { state.active()?.goForward() }, enabled = state.canForward) {
+            IconButton(enabled = selected?.canForward == true,
+                onClick = { state.active()?.goForward() }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowForward, "前进")
             }
-            IconButton(onClick = { state.closePopup(); state.mainSession?.loadUri(GECKO_BOOKSTORE_HOME) }) {
-                Icon(Icons.Default.Home, "书城首页")
-            }
-            IconButton(onClick = { state.active()?.reload() }) {
-                Icon(Icons.Default.Refresh, "刷新")
-            }
+            IconButton(onClick = {
+                state.root()?.let { root -> state.selectTab(root.id); root.session.loadUri(GECKO_BOOKSTORE_HOME) }
+            }) { Icon(Icons.Default.Home, "书城首页") }
+            IconButton(onClick = { state.active()?.reload() }) { Icon(Icons.Default.Refresh, "刷新") }
             IconButton(onClick = { state.changeDesktopMode(!state.desktopMode) }) {
                 Icon(if (state.desktopMode) Icons.Default.DesktopWindows else Icons.Default.PhoneAndroid,
                     if (state.desktopMode) "切换至移动版网站" else "切换至桌面版网站")
             }
         }
-        if (state.loading) LinearProgressIndicator(
-            modifier = Modifier.fillMaxWidth(), progress = { (state.progress / 100f).coerceIn(0f, 1f) })
-        state.errorMessage?.let { problem ->
+        if (state.tabs.size > 1) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                state.tabs.forEach { tab ->
+                    val activeTab = tab.id == state.selectedTabId
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (activeTab) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceContainerHigh
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { state.selectTab(tab.id) },
+                                modifier = Modifier.widthIn(max = 175.dp)) {
+                                Text(if (tab.root) "搜索结果" else tab.title,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            if (!tab.root) IconButton(onClick = { state.closeTab(tab.id) },
+                                modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.Close, "关闭${tab.title}标签", modifier = Modifier.size(17.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (selected != null && selected.loading) LinearProgressIndicator(
+            modifier = Modifier.fillMaxWidth(),
+            progress = { (selected.progress / 100f).coerceIn(0f, 1f) }
+        )
+        if (selected != null) selected.errorMessage?.let { problem ->
             Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer)
                 .padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(problem, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { state.errorMessage = null; state.active()?.reload() }) { Text("重试") }
+                TextButton(onClick = { selected.errorMessage = null; selected.session.reload() }) { Text("重试") }
             }
         }
-        Box(Modifier.fillMaxSize()) {
-            AndroidView(modifier = Modifier.fillMaxSize(), factory = { context ->
-                val newlyCreated = state.mainSession == null
-                val browser = state.mainSession ?: makeSession(context, false).also {
-                    state.mainSession = it
-                }
-                val view = state.mainView ?: GeckoView(context).also { state.mainView = it }
-                (view.parent as? ViewGroup)?.removeView(view)
-                if (view.session !== browser) {
-                    if (view.session != null) view.releaseSession()
-                    view.setSession(browser)
-                }
-                if (newlyCreated) browser.loadUri(GECKO_BOOKSTORE_HOME)
-                view
-            }, update = { view ->
-                if (state.mainSession == null) {
-                    // Re-created after a process restart: cookies persist in Gecko.
-                    state.mainSession = makeSession(view.context, false)
-                    view.setSession(state.mainSession!!)
-                }
-            })
-            val popup = state.popupSession
-            if (popup != null) AndroidView(modifier = Modifier.fillMaxSize(),
-                factory = { context ->
-                    val view = state.popupView ?: GeckoView(context).also { state.popupView = it }
-                    (view.parent as? ViewGroup)?.removeView(view)
-                    if (view.session !== popup) {
-                        if (view.session != null) view.releaseSession()
-                        view.setSession(popup)
-                    }
-                    view
-                }, update = { view ->
-                    if (view.session !== popup && popup.isOpen) {
-                        if (view.session != null) view.releaseSession()
-                        view.setSession(popup)
-                    }
-                })
-        }
+        // One GeckoView surface, regardless of the number of live sessions.
+        // No transparent overlapping view can eat touches on the search page.
+        AndroidView(modifier = Modifier.fillMaxSize(), factory = { context ->
+            val isNew = state.root() == null
+            // Both branches must produce a BookstoreTab, not an Any from
+            // mixing BookstoreTab and GeckoSession in an Elvis expression.
+            val root: BookstoreTab = state.root()
+                ?: state.installRoot(makeSession(context, true))
+            val view = state.browserView ?: GeckoView(context).also { state.browserView = it }
+            (view.parent as? ViewGroup)?.removeView(view)
+            if (view.session !== root.session) {
+                if (view.session != null) view.releaseSession()
+                view.setSession(root.session)
+            }
+            if (isNew) root.session.loadUri(GECKO_BOOKSTORE_HOME)
+            view
+        }, update = { view ->
+            val tab = state.activeTab() ?: return@AndroidView
+            if (view.session !== tab.session) {
+                if (view.session != null) view.releaseSession()
+                view.setSession(tab.session)
+            }
+        })
     }
 }
