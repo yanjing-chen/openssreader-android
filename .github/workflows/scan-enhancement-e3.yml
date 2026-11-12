@@ -1,0 +1,149 @@
+# Isolated E3 candidate workflow: main branch and official v* tag workflow untouched.
+name: Scan Enhancement E3 - CI and Prerelease
+on:
+  push:
+    branches:
+      - feature/scan-enhancement-e3-fix1
+    tags:
+      - 'scan-e3-fix1-rc*'
+permissions:
+  contents: read
+concurrency:
+  group: scan-e3-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify-debug:
+    name: Build + unit tests + lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK tools
+        uses: android-actions/setup-android@v4
+      - name: Install Android SDK 37.0
+        shell: bash
+        run: |
+          if ! sdkmanager --channel=3 'platforms;android-37.0' 'build-tools;36.0.0'; then
+            if command -v android >/dev/null 2>&1; then
+              android sdk install platforms/android-37.0 build-tools/36.0.0
+            else
+              echo 'Android SDK Platform 37.0 unavailable' >&2
+              exit 1
+            fi
+          fi
+          test -s "$ANDROID_SDK_ROOT/platforms/android-37.0/android.jar"
+      - name: Source contracts, APK and unit tests
+        shell: bash
+        run: bash ./BUILD_ANDROID_6800H.sh
+      - name: Release lint gate
+        shell: bash
+        run: bash android/gradlew --no-daemon :app:lintVitalRelease
+      - name: Upload debug APK for testing (Actions artifact only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenSSReader-ScanEnhance-E3-debug-${{ github.run_number }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+          if-no-files-found: error
+
+  signed-prerelease:
+    name: Signed prerelease APK and SHA256
+    needs: verify-debug
+    if: startsWith(github.ref, 'refs/tags/scan-e3-fix1-rc')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tagged commit, full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact E3 branch tip and tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_TAG" =~ ^scan-e3-fix1-rc[1-9][0-9]*$ ]] || { echo 'Invalid candidate tag' >&2; exit 1; }
+          git fetch origin '+refs/heads/feature/scan-enhancement-e3-fix1:refs/remotes/origin/feature/scan-enhancement-e3-fix1'
+          branch_sha="$(git rev-parse refs/remotes/origin/feature/scan-enhancement-e3-fix1)"
+          release_sha="$(git rev-parse HEAD)"
+          [[ "$release_sha" == "$branch_sha" ]] || {
+            echo 'Tag does not point to current E3 feature branch HEAD. Refusing to publish.' >&2
+            exit 1
+          }
+          grep -Fq 'import androidx.compose.foundation.horizontalScroll' android/app/src/main/java/org/openssreader/android/MainActivity.kt
+          grep -Fq 'versionName = "1.0.7"' android/app/build.gradle.kts
+          grep -Fq 'versionCode = 10007' android/app/build.gradle.kts
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK tools
+        uses: android-actions/setup-android@v4
+      - name: Install signing build tools
+        shell: bash
+        run: |
+          if ! sdkmanager --channel=3 'platforms;android-37.0' 'build-tools;36.0.0'; then
+            if command -v android >/dev/null 2>&1; then
+              android sdk install platforms/android-37.0 build-tools/36.0.0
+            else
+              exit 1
+            fi
+          fi
+          test -x "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"
+      - name: Restore EXISTING official Android signing key (never create a new key)
+        shell: bash
+        env:
+          STORE_B64: ${{ secrets.OSR_ANDROID_KEYSTORE_BASE64 }}
+          OSR_SIGNING_STORE_PASSWORD: ${{ secrets.OSR_ANDROID_KEYSTORE_PASSWORD }}
+          OSR_SIGNING_KEY_ALIAS: ${{ secrets.OSR_ANDROID_KEY_ALIAS }}
+          OSR_SIGNING_KEY_PASSWORD: ${{ secrets.OSR_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$STORE_B64" && -n "$OSR_SIGNING_STORE_PASSWORD" && -n "$OSR_SIGNING_KEY_ALIAS" && -n "$OSR_SIGNING_KEY_PASSWORD" ]] || {
+            echo 'Original release signing secrets are missing; refusing unsigned prerelease.' >&2
+            exit 1
+          }
+          umask 077
+          printf '%s' "$STORE_B64" | base64 --decode > "$RUNNER_TEMP/osr-release.keystore"
+          test -s "$RUNNER_TEMP/osr-release.keystore"
+      - name: Assemble signed release APK and SHA256
+        shell: bash
+        env:
+          OSR_SIGNING_STORE_PASSWORD: ${{ secrets.OSR_ANDROID_KEYSTORE_PASSWORD }}
+          OSR_SIGNING_KEY_ALIAS: ${{ secrets.OSR_ANDROID_KEY_ALIAS }}
+          OSR_SIGNING_KEY_PASSWORD: ${{ secrets.OSR_ANDROID_KEY_PASSWORD }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -Eeuo pipefail
+          export OSR_SIGNING_STORE_FILE="$RUNNER_TEMP/osr-release.keystore"
+          bash android/gradlew --no-daemon :app:assembleRelease
+          mkdir -p dist
+          apk="dist/OpenSSReader-Android-${RELEASE_TAG}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$apk"
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --print-certs "$apk"
+          (cd dist && sha256sum "$(basename "$apk")" > "$(basename "$apk").sha256")
+          test -s "$apk" && test -s "$apk.sha256"
+      - name: Publish prerelease, explicitly NOT Latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          gh release create "$RELEASE_TAG" \
+            "dist/OpenSSReader-Android-${RELEASE_TAG}.apk" \
+            "dist/OpenSSReader-Android-${RELEASE_TAG}.apk.sha256" \
+            --verify-tag --prerelease --latest=false \
+            --title "OpenSSReader Android 1.0.7 ScanEnhance E3 Fix1 (${RELEASE_TAG})" \
+            --notes-file SCAN_E3_PRERELEASE_NOTES_CN.md
