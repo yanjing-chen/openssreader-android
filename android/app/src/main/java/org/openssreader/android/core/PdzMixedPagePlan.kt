@@ -13,10 +13,10 @@ object PdzMixedPagePlan {
     private val front = Regex("fow([0-9]{3})\\.pdg", RegexOption.IGNORE_CASE)
     private val toc = Regex("!([0-9]{5})\\.pdg", RegexOption.IGNORE_CASE)
     private val body = Regex("([0-9]{6})\\.pdg", RegexOption.IGNORE_CASE)
-    private val bundle = Regex("([1-9][0-9]*)_([1-9][0-9]*)\\.pdg", RegexOption.IGNORE_CASE)
-    private const val MAX_PAGES = 100_000L
-    private const val MAX_PARTS = 100_000
-    private const val MAX_SEGMENT = 64L * 1024L * 1024L
+    private val bundle = Regex("([0-9]+)_([0-9]+)\\.pdg", RegexOption.IGNORE_CASE)
+    private val appendix = Regex("att([0-9]{3})\\.pdg", RegexOption.IGNORE_CASE)
+    private val MAX_PAGES = PdzCompatibilityLimits.MAX_BOOK_PAGES.toLong()
+    private const val MAX_PARTS = PdzCompatibilityLimits.MAX_BOOK_PAGES
 
     sealed interface Part {
         val firstPage: Int // physical page index, zero-based
@@ -28,8 +28,8 @@ object PdzMixedPagePlan {
                              override val pageCount: Int) : Part
     }
     data class Plan(val parts: List<Part>, val frontPages: Int,
-                    val tocPages: Int, val bodyPages: Int) {
-        val totalPages: Int get() = frontPages + tocPages + bodyPages
+                    val tocPages: Int, val bodyPages: Int, val appendixPages: Int = 0) {
+        val totalPages: Int get() = frontPages + tocPages + bodyPages + appendixPages
     }
 
     /** Null means no hybrid page representation; it does NOT mean corrupted. */
@@ -54,6 +54,14 @@ object PdzMixedPagePlan {
         }
         val firstPages = numbered(front, "前言")
         val tocPages = numbered(toc, "目录")
+        val appendixEntries = pdgs.mapNotNull { entry ->
+            val match = appendix.matchEntire(entry.name) ?: return@mapNotNull null
+            match.groupValues[1].toInt() to entry
+        }.sortedBy { it.first }
+        appendixEntries.forEachIndexed { i, (number, _) ->
+            if (number != appendixEntries.first().first + i)
+                throw PdzFormatException("附页编号存在缺口或重复")
+        }
         val bodySingles = pdgs.mapNotNull { entry ->
             val match = body.matchEntire(entry.name) ?: return@mapNotNull null
             val first = match.groupValues[1].toIntOrNull()
@@ -66,11 +74,11 @@ object PdzMixedPagePlan {
                 ?: throw PdzFormatException("PDF 分段起始页超出范围")
             val count = match.groupValues[2].toIntOrNull()
                 ?: throw PdzFormatException("PDF 分段页数超出范围")
-            if (entry.size !in 140..MAX_SEGMENT)
+            if (entry.size !in 140..PdzCompatibilityLimits.maxPdfCompressedBytes)
                 throw PdzFormatException("PDF 分段大小超出支持范围")
             Triple(first, count, entry)
         }
-        if (firstPages.size + tocPages.size + bodySingles.size + segments.size != pdgs.size)
+        if (firstPages.size + tocPages.size + bodySingles.size + segments.size + appendixEntries.size != pdgs.size)
             throw PdzFormatException("包含未识别的 PDG 页面，不能确定完整页序")
         if (bodySingles.isEmpty() && segments.isEmpty())
             throw PdzFormatException("缺少正文页面")
@@ -84,15 +92,19 @@ object PdzMixedPagePlan {
         tocPages.forEachIndexed { i, entry -> parts.add(Part.Single(firstPages.size + i, entry)) }
         for ((first, count, entry) in bodyParts) {
             if (first.toLong() != expected || count < 1 ||
-                expected + count - 1 > MAX_PAGES - preface)
+                expected + count - 1 > MAX_PAGES - preface - appendixEntries.size)
                 throw PdzFormatException("正文独立页和 PDF 分段之间存在缺页、重叠或超限")
             val global = (preface + expected - 1).toInt()
             if (bundle.matches(entry.name)) parts.add(Part.PdfBundle(global, entry, count))
             else parts.add(Part.Single(global, entry))
             expected += count
         }
-        val total = preface + expected - 1
+        val bodyCount = expected - 1
+        appendixEntries.forEachIndexed { i, (_, entry) ->
+            parts.add(Part.Single((preface + bodyCount + i).toInt(), entry))
+        }
+        val total = preface + bodyCount + appendixEntries.size
         if (total < 1 || total > MAX_PAGES) throw PdzFormatException("整书页数超限")
-        return Plan(parts, firstPages.size, tocPages.size, (expected - 1).toInt())
+        return Plan(parts, firstPages.size, tocPages.size, bodyCount.toInt(), appendixEntries.size)
     }
 }

@@ -53,9 +53,35 @@ class PdzMixedPagePlanTest {
             PdzMixedPagePlan.plan(catalog("1_3.pdg", "000003.pdg"))
         }
     }
-    @Test fun unknownAppendixIsNotSilentlyDropped() {
+    @Test fun appendixAfterBodyIsPreserved() {
+        // Body: 000001 (1 page) + 2_2 (2 pages) + 000004 (1 page).
+        // Appendix att018 follows those four body pages; it is NOT body page 18.
+        val plan = PdzMixedPagePlan.plan(catalog(
+            "att018.pdg", "000004.pdg", "2_2.pdg", "000001.pdg"
+        ))!!
+        assertEquals(4, plan.bodyPages)
+        assertEquals(1, plan.appendixPages)
+        assertEquals(5, plan.totalPages)
+        assertEquals(listOf(0, 1, 3, 4), plan.parts.map { it.firstPage })
+        assertEquals(listOf(1, 2, 1, 1), plan.parts.map { it.pageCount })
+        assertEquals(listOf("000001.pdg", "2_2.pdg", "000004.pdg", "att018.pdg"),
+            plan.parts.map { when (it) {
+                is PdzMixedPagePlan.Part.Single -> it.entry.name
+                is PdzMixedPagePlan.Part.PdfBundle -> it.entry.name
+            } })
+    }
+    @Test fun appendixAfterLastBundleIsPreserved() {
+        // 1 single page + 2 pages in a bundle + 1 appendix = 4 physical pages.
+        val plan = PdzMixedPagePlan.plan(catalog("000001.pdg", "2_2.pdg", "att018.pdg"))!!
+        assertEquals(3, plan.bodyPages)
+        assertEquals(1, plan.appendixPages)
+        assertEquals(4, plan.totalPages)
+        assertEquals(listOf(0, 1, 3), plan.parts.map { it.firstPage })
+        assertEquals(listOf(1, 2, 1), plan.parts.map { it.pageCount })
+    }
+    @Test fun appendixGapStillRejected() {
         assertThrows(PdzFormatException::class.java) {
-            PdzMixedPagePlan.plan(catalog("000001.pdg", "2_2.pdg", "att001.pdg"))
+            PdzMixedPagePlan.plan(catalog("1_2.pdg", "att018.pdg", "att020.pdg"))
         }
     }
     @Test fun missingTocIndexRejected() {

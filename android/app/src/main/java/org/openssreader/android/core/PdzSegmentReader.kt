@@ -11,9 +11,8 @@ import java.io.RandomAccessFile
  * Does not write an exported document or claim that PDF merging is complete.
  */
 object PdzSegmentReader {
-    private val bundleName = Regex("([1-9][0-9]*)_([1-9][0-9]*)\\.pdg", RegexOption.IGNORE_CASE)
-    private const val MAX_SEGMENT = 64L * 1024L * 1024L
-    private const val MAX_PAGES = 100_000
+    private val bundleName = Regex("([0-9]+)_([0-9]+)\\.pdg", RegexOption.IGNORE_CASE)
+    private const val MAX_PAGES = PdzCompatibilityLimits.MAX_BOOK_PAGES
 
     data class Bundle(val entry: PdzEntry, val firstPage: Int, val expectedCount: Int)
     data class Plan(val bundles: List<Bundle>, val totalPages: Int)
@@ -31,7 +30,7 @@ object PdzSegmentReader {
         var next = 1L
         for (segment in ordered) {
             if (segment.firstPage.toLong() != next || segment.expectedCount < 1 ||
-                segment.expectedCount > MAX_PAGES || segment.entry.size !in 140..MAX_SEGMENT)
+                segment.expectedCount > MAX_PAGES || segment.entry.size !in 140..PdzCompatibilityLimits.maxPdfCompressedBytes)
                 throw PdzFormatException("分段页序有重叠、缺页或资源超出安全限制")
             next += segment.expectedCount
             if (next > MAX_PAGES + 1L) throw PdzFormatException("分段总页数超限")

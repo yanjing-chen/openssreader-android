@@ -45,6 +45,15 @@ class BookshelfIndexInstrumentedTest {
         assertEquals("哈哈哈", decodedLabels.single().title)
         assertTrue(decodedLabels.single().bookIds.isEmpty())
     }
+    @Test fun jsonNameUsesExactPdzOrPdfStem() {
+        val pdz = ShelfBook("11111111-2222-3333-4444-555555555555", "internal.pdz", "PDZ",
+            "荷兰史", publicPdzName = "荷兰史_作者_2024_123.pdz",
+            publicPdfName = "荷兰史_作者_2024_123.pdf")
+        assertEquals("荷兰史_作者_2024_123.json", BookshelfIndex.recordFileName(pdz))
+        val pdf = pdz.copy(type = "PDF", publicPdzName = null)
+        assertEquals("荷兰史_作者_2024_123.json", BookshelfIndex.recordFileName(pdf))
+        assertTrue(runCatching { BookshelfIndex.recordFileName(pdz.copy(publicPdzName = null)) }.isFailure)
+    }
     @Test fun cannotRestoreEscapingFilename() {
         val text = """{"schema":1,"books":[{"type":"PDZ","publicPdzName":"../outside.pdz"}]}"""
         assertTrue(BookshelfIndex.decode(text).books.isEmpty())

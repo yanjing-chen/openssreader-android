@@ -34,8 +34,10 @@ object CompositePhotoPage {
             offset < compressedAt+compressedSize || offset+count > clear.size)
             throw Invalid("复合照片数据范围不合法或与黑白位流重叠")
         val pageW=u16(clear,0x10); val pageH=u16(clear,0x12)
-        if (x.toLong()+w>pageW || y.toLong()+h>pageH)
-            throw Invalid("复合照片目标矩形超出扫描页面")
+        // PDF MediaBox clips the drawing; a partially outside rectangle is valid.
+        // Reject only fully outside photos or impossible scan dimensions.
+        if (pageW < 1 || pageH < 1 || x >= pageW || y >= pageH)
+            throw Invalid("复合照片没有与扫描页面相交：page=${pageW}x$pageH, photo=($x,$y ${w}x$h)")
         val jpeg=clear.copyOfRange(offset.toInt(),(offset+count).toInt())
         val info=JpegPdfInput.inspect(jpeg)
         val bg=BwPdgDecoder.decodeVerifiedCompositeBackground(clear)

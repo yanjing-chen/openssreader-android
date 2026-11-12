@@ -82,6 +82,15 @@ class ShelfStore(context: Context) {
         }
     } catch (_: Exception) { emptyList() }
 
+    /** One-time migration for pre-JSON shelf preferences; public JSON is authoritative afterward. */
+    fun legacyIndexMigrationPending(): Boolean =
+        !pref.getBoolean("public-json-source-migrated-v1", false)
+    fun markLegacyIndexMigrated() {
+        check(pref.edit().putBoolean("public-json-source-migrated-v1", true).commit()) {
+            "无法记录书架迁移状态"
+        }
+    }
+
     @Synchronized fun save(books: List<ShelfBook>) {
         val array = JSONArray()
         books.forEach { b ->

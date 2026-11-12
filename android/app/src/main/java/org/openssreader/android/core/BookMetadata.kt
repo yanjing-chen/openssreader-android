@@ -27,6 +27,14 @@ object BookMetadataReader {
         }
     fun year(raw: String): Int? = year.find(raw)?.groupValues?.get(1)?.toIntOrNull()
         ?.takeIf { it >= 1800 && it <= Year.now().value + 1 }
+    /** Metadata is optional: malformed or oversized meta.xml must not prevent
+     * importing a PDZ whose core catalog is readable. Strict read() remains
+     * available for diagnosis and format tests. */
+    fun readTolerant(file: File, catalog: PdzCatalog): BookMetadata? =
+        try { read(file, catalog) } catch (_: PdzFormatException) { null }
+        catch (_: IllegalArgumentException) { null }
+        catch (_: javax.xml.parsers.ParserConfigurationException) { null }
+
     fun read(file: File, catalog: PdzCatalog): BookMetadata? {
         val entry = catalog.entries.firstOrNull { it.name.equals("meta.xml", true) } ?: return null
         val bytes = PdzCatalogReader.resource(file, entry, 64 * 1024)

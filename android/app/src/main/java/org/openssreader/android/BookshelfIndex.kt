@@ -75,6 +75,24 @@ object BookshelfIndex {
         }
         return Snapshot(books, favIds, tagList)
     }
+    /** The JSON basename is identical to the public PDZ/PDF basename.
+     * Book IDs remain inside the record to keep labels, favorites and progress stable.
+     * A PDF converted from PDZ shares its PDZ's JSON rather than generating a second record.
+     */
+    fun recordFileName(book: ShelfBook): String {
+        val source = when (book.type) {
+            "PDZ" -> book.publicPdzName?.takeIf { valid(it, ".pdz") }
+            "PDF" -> book.publicPdfName?.takeIf { valid(it, ".pdf") }
+            else -> null
+        } ?: throw IllegalArgumentException("图书尚无已保存的公共原始文件，不能建立书架 JSON")
+        val stem = source.dropLast(4)
+        val json = "$stem.json"
+        require(valid(json, ".json") && json !in setOf("labels.json", "index.json")) {
+            "图书文件名与书架保留文件名冲突：$json"
+        }
+        return json
+    }
+
     /** A separate small .json file for each visible book. */
     fun encodeRecord(book: ShelfBook, favorite: Boolean, labelIds: Set<String>): String =
         JSONObject().apply {

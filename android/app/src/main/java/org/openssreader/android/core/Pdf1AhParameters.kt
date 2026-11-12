@@ -225,7 +225,7 @@ object Pdf1AhParameters {
         val subtype = header[3].toInt() and 255
         require(subtype in 0x11..0x1c) { "不支持的 PDF 子类型" }
         val length = u32(header, 0x10)
-        require(length in 1..(64L * 1024 * 1024)) { "1AH 压缩数据长度不安全" }
+        require(length in 1..PdzCompatibilityLimits.maxPdfCompressedBytes) { "1AH 压缩数据长度不安全" }
         val result = VM(length, u16(header, 4), u16(header, 6), u16(header, 0x52)).run()
         val group = if (subtype >= 0x19) 2 else if (subtype >= 0x15) 1 else 0
         val firstSubtype = if (group == 2) 0x19 else if (group == 1) 0x15 else 0x11

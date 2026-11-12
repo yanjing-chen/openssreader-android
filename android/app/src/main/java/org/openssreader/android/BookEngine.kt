@@ -30,6 +30,7 @@ class BookEngine(private val store: ShelfStore) {
         if (layout.front > 0) result.add(BookSection("前言", 0))
         if (layout.contents > 0) result.add(BookSection("目录", layout.front))
         if (layout.body > 0) result.add(BookSection("正文", layout.front + layout.contents))
+        if (layout.appendix > 0) result.add(BookSection("附页", layout.front + layout.contents + layout.body))
         return result
     }
 
@@ -55,21 +56,34 @@ class BookEngine(private val store: ShelfStore) {
             require(pages > 0) { "空 PDF" }
             return ShelfBook(id, file.name, "PDF", fallback, totalPages = pages)
         }
-        val catalog = PdzCatalogReader.read(file)
-        val info = BookMetadataReader.read(file, catalog)
-        val layout = PdzContentsReader.layout(catalog)
-        val mixedPlan = PdzMixedPagePlan.plan(catalog)
+        // Download/import admission uses Linux's outer PDZ envelope. New or
+        // unknown catalog variants may still be preserved as original PDZ;
+        // decode/whole-book export must separately pass strict page checks.
+        org.openssreader.android.core.PdzDownloadEnvelope.inspect(file)
+        val catalog = try { PdzCatalogReader.read(file) }
+                      catch (_: org.openssreader.android.core.PdzFormatException) { null }
+        val info = catalog?.let { BookMetadataReader.readTolerant(file, it) }
+        val pages = catalog?.let { parsed ->
+            runCatching { PdzContentsReader.layout(parsed).verifiedTotalPages }.getOrNull()
+        }
         return ShelfBook(
             id, file.name, "PDZ", info?.title?.ifBlank { fallback } ?: fallback,
             info?.creatorRaw.orEmpty(), info?.publisher.orEmpty(), info?.publicationYear,
-            info?.ssid.orEmpty(), mixedPlan?.totalPages ?: layout.verifiedTotalPages,
+            info?.ssid.orEmpty(), pages,
         )
     }
     /** Only downloaded files are automatically renamed, with G9 rule and no overwrite. */
     fun renameDownloaded(source: File, info: ShelfBook): File {
         val ssid = info.ssid.takeIf { it.matches(Regex("\\d{1,32}")) }.orEmpty()
-        val metadata = BookMetadataReader.read(source, PdzCatalogReader.read(source)) ?: return source
-        val targetName = BookNames.pdzName(metadata, ssid)
+        // A complete download may use a newer catalog variant unknown to this
+        // reader. Do not turn an optional filename upgrade into a failed download.
+        val metadata = runCatching { PdzCatalogReader.read(source) }.getOrNull()
+            ?.let { BookMetadataReader.readTolerant(source, it) }
+        // Unknown but outer-envelope-valid PDZ should still be renamed using
+        // the known book:// SSID, not left with a random internal UUID.
+        val targetName = if (metadata != null) BookNames.pdzName(metadata, ssid)
+            else if (ssid.isNotEmpty()) "机构图书_${ssid}.pdz"
+            else return source
         val ssidSuffix = if (ssid.isEmpty()) ".pdz" else "_${ssid}.pdz"
         val stem = targetName.removeSuffix(ssidSuffix)
         repeat(1000) { n ->
@@ -178,7 +192,7 @@ class BookEngine(private val store: ShelfStore) {
         if (book.type != "PDZ") return null
         val src = store.raw(book)
         val catalog = PdzCatalogReader.read(src)
-        val info = BookMetadataReader.read(src, catalog)
+        val info = BookMetadataReader.readTolerant(src, catalog)
         return PdzContentsReader.chapters(src, catalog, info, PdzContentsReader.layout(catalog))
     }
     fun export(resolver: ContentResolver, book: ShelfBook, uri: Uri, pdf: Boolean) {

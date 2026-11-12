@@ -6,7 +6,7 @@ m=(r/'app/src/main/AndroidManifest.xml').read_text()
 u=(r/'app/src/main/java/org/openssreader/android/ReleaseUpdates.kt').read_text()
 ui=(r/'app/src/main/java/org/openssreader/android/MainActivity.kt').read_text()
 g=(r/'app/src/main/java/org/openssreader/android/GeckoBookstore.kt').read_text()
-assert 'versionCode = 10003' in a and 'versionName = "1.0.3"' in a
+assert 'versionCode = 10007' in a and 'versionName = "1.0.7"' in a
 assert 'org.openssreader.android' in a
 assert 'OSR_SIGNING_STORE_FILE' in a and 'signingConfigs' in a
 assert 'REQUEST_INSTALL_PACKAGES' in m and 'FileProvider' in m

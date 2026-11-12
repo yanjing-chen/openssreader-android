@@ -12,6 +12,6 @@ java -jar "$TMP/protocol.jar" \
     "$ROOT/verification/fixtures/book_grant_mode1_synthetic.hex"
 kotlinc "$SRC/core/SafeXml.kt" "$SRC/InstitutionBookProtocol.kt" "$SRC/InstitutionDeviceBinding.kt" \
     "$SRC/InstitutionPdzTransfer.kt" "$SRC/DownloadPolicy.kt" \
-    "$SRC/core/PdzCatalog.kt" -d "$TMP/transfer.jar"
+    "$SRC/core/PdzCatalog.kt" "$SRC/core/PdzDownloadEnvelope.kt" -d "$TMP/transfer.jar"
 python3 "$ROOT/verification/check_book_manifest.py" "$ROOT"
 echo 'BOOK_SCHEME_OFFLINE_PASS (NOT an Android build or live institution download)'

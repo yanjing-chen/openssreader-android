@@ -15,8 +15,8 @@ android {
         applicationId = "org.openssreader.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10003
-        versionName = "1.0.3"
+        versionCode = 10007
+        versionName = "1.0.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     // Release signing keys come exclusively from CI secrets / local environment.

@@ -22,5 +22,5 @@ assert allow=={'read.sslibrary.com','bookworld.5read.com','bfts.5read.com','nfts
 assert not any(d.attrib.get('includeSubdomains')=='true' for d in network.findall('.//domain'))
 text=(root/'app/src/main/java/org/openssreader/android/OsrViewModel.kt').read_text()
 assert 'InstitutionPdzTransfer(store.bookFolder' in text and 'engine.renameDownloaded(incoming, book)' in text
-assert 'predecode(book, task.id)' in text and 'downloadTabNonce' in text
+assert 'predecode(admitted, task.id)' in text and 'downloadTabNonce' in text
 print('BOOK_MANIFEST_ROUTE_PASS')

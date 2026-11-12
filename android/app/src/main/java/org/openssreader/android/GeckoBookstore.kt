@@ -260,7 +260,7 @@ internal fun GeckoBookstorePage(state: GeckoBookstoreState, onBookLink: (String)
         s.setContentDelegate(object : GeckoSession.ContentDelegate {
             override fun onTitleChange(session: GeckoSession, title: String?) {
                 val tab = state.tabFor(session) ?: return
-                if (!title.isNullOrBlank()) tab.title = title.take(90)
+                if (!title.isNullOrBlank()) tab.title = title
             }
             override fun onCloseRequest(session: GeckoSession) {
                 state.tabFor(session)?.let { tab -> if (!tab.root) state.closeTab(tab.id) }
@@ -346,7 +346,7 @@ internal fun GeckoBookstorePage(state: GeckoBookstoreState, onBookLink: (String)
                     if (state.desktopMode) "切换至移动版网站" else "切换至桌面版网站")
             }
         }
-        if (state.tabs.size > 1) {
+        if (BookstoreNavigationPolicy.shouldShowTabs(state.tabs.size)) {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
                     .padding(horizontal = 8.dp, vertical = 3.dp),
@@ -363,7 +363,7 @@ internal fun GeckoBookstorePage(state: GeckoBookstoreState, onBookLink: (String)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             TextButton(onClick = { state.selectTab(tab.id) },
                                 modifier = Modifier.widthIn(max = 175.dp)) {
-                                Text(if (tab.root) "搜索结果" else tab.title,
+                                Text(tab.title,
                                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             if (!tab.root) IconButton(onClick = { state.closeTab(tab.id) },

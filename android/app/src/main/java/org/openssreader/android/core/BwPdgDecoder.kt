@@ -41,7 +41,7 @@ object BwPdgDecoder {
         val width=u16(clear,0x10); val height=u16(clear,0x12)
         val offset=u32(clear,0x18); val size=u32(clear,0x1c)
         if (width !in 1..20000 || height !in 1..30000 ||
-            width.toLong()*height > 80_000_000L ||
+            width.toLong()*height > PdzCompatibilityLimits.maxPixels ||
             offset < (if (u8(clear,0x0f)==0x11) 0x70 else 1) || size <= 0 ||
             size > 64L*1024*1024 || offset+size > clear.size.toLong())
             throw Invalid("黑白 PDG 页头中的尺寸或数据范围无效")

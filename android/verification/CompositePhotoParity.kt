@@ -27,12 +27,19 @@ fun main(args: Array<String>) {
     val events=mutableListOf<Pair<Int,Int>>()
     check(PdzDirectJpegConverter.convert(fixture,layout,pdf,pageBookKey=key){done,total->events.add(done to total)}==3)
     check(events==listOf(1 to 3,2 to 3,3 to 3))
-    for (kind in listOf("count","overlap","rectangle","jpeg")) {
+    for (kind in listOf("count","overlap","jpeg")) {
         val f=File(fixture.parentFile,"synthetic_composite11_bad_${kind}.pdz")
         val dest=File(pdf.parentFile,"bad_${kind}.pdf")
         val seen=mutableListOf<Pair<Int,Int>>()
         val problem=runCatching { PdzDirectJpegConverter.convert(f,PdzContentsReader.layout(PdzCatalogReader.read(f)),dest,pageBookKey=key){d,t->seen.add(d to t)} }.exceptionOrNull()
         check(problem!=null && !dest.exists() && seen.isEmpty()) { "Incorrectly accepted broken $kind composite" }
     }
-    println("PASS Linux reference 1-bit + JPEG exact, descriptor bounds and Android-style 3-page PDF with atomic failure")
+    // The legacy "bad_rectangle" fixture is a *partially out-of-bounds*
+    // photo, which Linux clips at the PDF MediaBox; it is valid after Fix11.
+    val clipped=File(fixture.parentFile,"synthetic_composite11_bad_rectangle.pdz")
+    val clippedPdf=File(pdf.parentFile,"clipped.pdf")
+    check(PdzDirectJpegConverter.convert(clipped,
+        PdzContentsReader.layout(PdzCatalogReader.read(clipped)),clippedPdf,pageBookKey=key){_,_->}==3)
+    check(clippedPdf.isFile && clippedPdf.length()>100)
+    println("PASS composite JPEG: preserved layers, partial photo overflow accepted and corrupt data rejected")
 }

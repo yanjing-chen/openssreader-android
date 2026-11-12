@@ -12,17 +12,21 @@ data class Chapter(val code: String, val title: String, val level: Int, val body
     val documentPageZeroBased: Int?)
 
 data class PageLayout(val physicalPages: List<PdzEntry>?, val front: Int, val contents: Int, val body: Int,
-    val verifiedTotalPages: Int?, val mappingAvailable: Boolean)
+    val verifiedTotalPages: Int?, val mappingAvailable: Boolean, val appendix: Int = 0)
 object PdzContentsReader {
     private val front = Regex("fow(\\d{3})\\.pdg", RegexOption.IGNORE_CASE)
     private val contents = Regex("!(\\d{5})\\.pdg", RegexOption.IGNORE_CASE)
     private val body = Regex("(\\d{6})\\.pdg", RegexOption.IGNORE_CASE)
+    private val appendix = Regex("att(\\d{3})\\.pdg", RegexOption.IGNORE_CASE)
     private val segments = Regex("(\\d+)_(\\d+)\\.pdg", RegexOption.IGNORE_CASE)
+    /** Exposed to JVM offline contract tests, used by chapters() verbatim. */
+    fun isWhitespaceRow(bytes: ByteArray): Boolean =
+        bytes.all { it == 32.toByte() || it == 9.toByte() || it == 13.toByte() }
     private val codePattern = Regex("(?:[0-9a-z]{2})+")
-    private fun numbered(records: List<PdzEntry>, pattern: Regex): List<PdzEntry>? {
+    private fun numbered(records: List<PdzEntry>, pattern: Regex, arbitraryStart: Boolean = false): List<PdzEntry>? {
         val matches = records.mapNotNull { r -> pattern.matchEntire(r.name)?.let { Pair(it.groupValues[1].toInt(), r) } }
             .sortedBy { it.first }
-        return matches.map { it.first }.takeIf { numbers -> numbers == (1..numbers.size).toList() }
+        return matches.map { it.first }.takeIf { numbers -> numbers == (if (arbitraryStart && numbers.isNotEmpty()) (numbers[0] until numbers[0] + numbers.size).toList() else (1..numbers.size).toList()) }
             ?.let { matches.map { r -> r.second } }
     }
     fun layout(catalog: PdzCatalog): PageLayout {
@@ -31,8 +35,8 @@ object PdzContentsReader {
         val b = numbered(entries, contents)
         val c = numbered(entries, body)
         val segs = entries.filter { segments.matches(it.name) }
-        val appendix = entries.any { Regex("att\\d{3}\\.pdg", RegexOption.IGNORE_CASE).matches(it.name) }
-        val known = listOf(front, contents, body, segments, Regex("att\\d{3}\\.pdg", RegexOption.IGNORE_CASE))
+        val d = numbered(entries, appendix, arbitraryStart = true)
+        val known = listOf(front, contents, body, segments, appendix)
         val unknown = entries.any { it.name.endsWith(".pdg", true) && known.none { p -> p.matches(it.name) } }
         // A1 supports a complete physical-page ordering only for individual page records.
         val segmentPairs = segs.mapNotNull { segments.matchEntire(it.name)?.let { m ->
@@ -42,7 +46,7 @@ object PdzContentsReader {
         if (segs.isNotEmpty() && segmentPairs.size == segs.size && c?.isEmpty() == true) {
             var next = 1L
             for ((start, count) in segmentPairs) {
-                if (start == null || count == null || start.toLong() != next || count < 1 || next + count > 1_000_000L) {
+                if (start == null || count == null || start.toLong() != next || count < 1 || next + count > PdzCompatibilityLimits.MAX_BOOK_PAGES.toLong() + 1L) {
                     next = -1L; break
                 }
                 next += count
@@ -54,10 +58,10 @@ object PdzContentsReader {
         val mixedPlan = if (segs.isNotEmpty()) PdzMixedPagePlan.plan(catalog) else null
         val bodyCount = mixedPlan?.bodyPages ?: if (segs.isNotEmpty()) segPageCount else c?.size
         val validMapping = (mixedPlan != null) ||
-            (a != null && b != null && bodyCount != null && bodyCount > 0 && !appendix && !unknown)
-        val mapped = if (validMapping && segs.isEmpty()) a!! + b!! + c!! else null
-        val total = if (validMapping) a!!.size + b!!.size + bodyCount!! else null
-        return PageLayout(mapped, a?.size ?: 0, b?.size ?: 0, bodyCount ?: 0, total, validMapping)
+            (a != null && b != null && bodyCount != null && bodyCount > 0 && d != null && !unknown)
+        val mapped = if (validMapping && segs.isEmpty()) a!! + b!! + c!! + d!! else null
+        val total = if (validMapping) a!!.size + b!!.size + bodyCount!! + (d?.size ?: 0) else null
+        return PageLayout(mapped, a?.size ?: 0, b?.size ?: 0, bodyCount ?: 0, total, validMapping, d?.size ?: 0)
     }
     fun chapters(file: File, catalog: PdzCatalog, metadata: BookMetadata?, layout: PageLayout): List<Chapter>? {
         val entry = catalog.entries.firstOrNull { it.name.equals("contents.dat", true) } ?: return null
@@ -94,7 +98,7 @@ object PdzContentsReader {
         val seen = HashSet<String>()
         for (line in rows) {
             val trimmed = line.dropLastWhile { it == 13.toByte() }.toByteArray()
-            if (trimmed.isEmpty()) continue
+            if (isWhitespaceRow(trimmed)) continue
             if (result.size >= 100_000) throw PdzFormatException("Too many TOC rows")
             val fields = trimmed.splitOn('|'.code.toByte())
             if (fields.size != 6 || fields.last().isNotEmpty()) throw PdzFormatException("Invalid TOC row fields")

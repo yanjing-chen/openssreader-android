@@ -37,8 +37,8 @@ object Hh04JpegDecoder {
         val start = u32(clear, 24)
         val size = u32(clear, 28)
         if (width !in 1..20000 || height !in 1..20000 ||
-            width.toLong() * height > 80_000_000L ||
-            start < 140 || size <= 16 || size > 64L * 1024 * 1024 ||
+            width.toLong() * height > PdzCompatibilityLimits.maxPixels ||
+            start < 140 || size <= 16 || size > PdzCompatibilityLimits.maxJpegBytes ||
             start + size != clear.size.toLong()) {
             throw Unsupported("HH/04H 页头尺寸或 JPEG 数据范围不合法")
         }

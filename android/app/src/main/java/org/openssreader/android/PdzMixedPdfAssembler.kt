@@ -37,7 +37,7 @@ object PdzMixedPdfAssembler {
             if (document.isEncrypted) throw UnsupportedPdzPages("PDF 分段不允许二次加密")
             document.numberOfPages
         }
-        if (pdfBoxPages != expected || pdfBoxPages < 1 || androidPages(pdf) != expected)
+        if (pdfBoxPages != expected || pdfBoxPages < 1)
             throw UnsupportedPdzPages("PDF 页面校验失败：应有 $expected 页，PDFBox 得到 $pdfBoxPages 页")
         return expected
     }
@@ -90,7 +90,8 @@ object PdzMixedPdfAssembler {
                         flushSingles()
                         val fragment = File(work, "part-${(nextFile++).toString().padStart(5, '0')}.pdf")
                         try {
-                            val raw = PdzCatalogReader.resource(source, part.entry, 64 * 1024 * 1024)
+                            val raw = PdzCatalogReader.resource(source, part.entry,
+                                org.openssreader.android.core.PdzCompatibilityLimits.maxPdfCompressedBytes.toInt())
                             val clear = if (raw.size >= 2 && raw[0] == 'H'.code.toByte() &&
                                 raw[1] == 'H'.code.toByte()) raw else {
                                 val key = authorizedBookKey
@@ -120,6 +121,8 @@ object PdzMixedPdfAssembler {
             if (!pending.isFile || pending.length() < 128L)
                 throw UnsupportedPdzPages("PDF 合并没有生成有效文件")
             checkedPages(pending, total)
+            if (androidPages(pending) != total)
+                throw UnsupportedPdzPages("完整 PDF 无法由 Android 渲染器读取全部页面")
             if (destination.exists() || !pending.renameTo(destination))
                 throw UnsupportedPdzPages("PDF 合并结果无法安全发布")
             progress(total, total)

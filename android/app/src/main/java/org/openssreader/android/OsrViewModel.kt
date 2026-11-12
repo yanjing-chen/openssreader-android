@@ -45,13 +45,10 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
     val rootStorageGranted = _rootStorageGranted.asStateFlow()
     private val engine = BookEngine(store)
     private val coverRepository = ShelfCoverRepository(store)
-    private val _books = MutableStateFlow(store.load().let { restored ->
-        restored.mapIndexed { index, book ->
-            if (book.addedAt <= 0L && book.legacyOrder <= 0L)
-                book.copy(legacyOrder = (restored.size - index).toLong())
-            else book
-        }
-    })
+    // The UI is populated only after reading durable public JSON, or after a
+    // newly downloaded/imported book has successfully committed its own JSON.
+    // Never display stale SharedPreferences books before the public scan.
+    private val _books = MutableStateFlow<List<ShelfBook>>(emptyList())
     val books = _books.asStateFlow()
     private val _transfers = MutableStateFlow(store.loadTasks())
     private val downloadJobs = ConcurrentHashMap<String, Job>()
@@ -182,35 +179,33 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
             } catch (exc: Exception) { message("目录恢复失败：${exc.message}") }
         }
     }
-    private suspend fun mirror(book: ShelfBook, kind: PublicBookStorage.Kind): String? =
+    /** Publish the complete original / validated clean PDF first; this does
+     * NOT make a book visible. The caller must commit its public JSON next.
+     */
+    private suspend fun publishCopy(book: ShelfBook, kind: PublicBookStorage.Kind): ShelfBook =
         withContext(Dispatchers.IO) {
-            try {
-                val file = if (kind == PublicBookStorage.Kind.PDZ) store.raw(book)
-                    else store.pdf(book) ?: error("尚未生成 PDF")
-                val name = when {
-                    // Downloaded PDZ already has its verified G9 name. Imports use
-                    // an internal UUID to avoid collisions; never expose that as
-                    // the filename in the user-visible folder.
-                    kind == PublicBookStorage.Kind.PDZ && book.filename == "${book.id}.pdz" -> {
-                        val metadata = org.openssreader.android.core.BookMetadataReader.read(
-                            file, PdzCatalogReader.read(file))
-                        if (metadata != null)
-                            org.openssreader.android.core.BookNames.pdzName(metadata, book.ssid)
-                        else "${book.title}.pdz"
+            val file = if (kind == PublicBookStorage.Kind.PDZ) store.raw(book)
+                else store.pdf(book) ?: error("尚未生成 PDF")
+            val name = when {
+                kind == PublicBookStorage.Kind.PDZ && book.filename == "${book.id}.pdz" -> {
+                    val catalog = runCatching { PdzCatalogReader.read(file) }.getOrNull()
+                    val metadata = catalog?.let {
+                        org.openssreader.android.core.BookMetadataReader.readTolerant(file, it)
                     }
-                    kind == PublicBookStorage.Kind.PDZ -> book.filename
-                    book.type == "PDF" -> book.publicPdfName ?: "${book.title}.pdf"
-                    book.publicPdfName != null -> book.publicPdfName
-                    book.filename != "${book.id}.pdz" -> book.filename.removeSuffix(".pdz") + ".pdf"
-                    else -> "${book.title}.pdf"
+                    if (metadata != null)
+                        org.openssreader.android.core.BookNames.pdzName(metadata, book.ssid)
+                    else "${book.title}.pdz"
                 }
-                val published = store.publicFiles.publish(file, kind, book.id, name)
-                val basename = store.publicFiles.fileName(published)
-                if (kind == PublicBookStorage.Kind.PDZ)
-                    revise(book.copy(publicPdzName = basename))
-                else revise(book.copy(publicPdfName = basename))
-                null
-            } catch (exc: Exception) { "${kind.label} 共享保存失败：${exc.message}" }
+                kind == PublicBookStorage.Kind.PDZ -> book.filename
+                book.type == "PDF" -> book.publicPdfName ?: "${book.title}.pdf"
+                book.publicPdfName != null -> book.publicPdfName
+                book.filename != "${book.id}.pdz" -> book.filename.removeSuffix(".pdz") + ".pdf"
+                else -> "${book.title}.pdf"
+            }
+            val uri = store.publicFiles.publish(file, kind, book.id, name)
+            val actualName = store.publicFiles.fileName(uri)
+            if (kind == PublicBookStorage.Kind.PDZ) book.copy(publicPdzName = actualName)
+            else book.copy(publicPdfName = actualName)
         }
     fun message(text: String) { _message.value = text }
     fun dismissMessage() { _message.value = "" }
@@ -236,19 +231,64 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
         _fields.update { if (show) it + name else it - name }
         prefs.edit().putString("fields", _fields.value.joinToString("|")).apply()
     }
-    private suspend fun addBook(book: ShelfBook) {
-        // Admissions are serialized with bookshelf scans, so opening a PDZ
-        // while startup restoration runs cannot erase the newly imported book.
+    /** Keep JSON for temporarily disconnected public files when another book
+     * is added, edited or removed. Hidden index entries must never be silently
+     * deleted just because external storage was unavailable during a scan.
+     * Explicit removal is excluded via the old visible-ID set.
+     */
+    private fun durableSnapshot(visible: List<ShelfBook>, favoriteIds: Set<String>,
+                                currentLabels: List<ShelfLabel>): BookshelfIndex.Snapshot {
+        val previous = store.publicFiles.readShelfIndex()?.let(BookshelfIndex::decode)
+            ?: return BookshelfIndex.Snapshot(visible, favoriteIds, currentLabels)
+        val knownIds = _books.value.map { it.id }.toSet()
+        val visibleIds = visible.map { it.id }.toSet()
+        val hidden = previous.books.filter { it.id !in knownIds && it.id !in visibleIds }
+        val hiddenIds = hidden.map { it.id }.toSet()
+        val allLabels = currentLabels.map { label ->
+            val retainedMembers = previous.labels.firstOrNull { it.id == label.id }
+                ?.bookIds?.intersect(hiddenIds).orEmpty()
+            label.copy(bookIds = label.bookIds + retainedMembers)
+        }
+        return BookshelfIndex.Snapshot(visible + hidden,
+            favoriteIds + previous.favorites.intersect(hiddenIds), allLabels)
+    }
+
+    /** A book is NOT admitted until its public JSON has been written and
+     * read back successfully. UI and SharedPreferences follow that commit.
+     */
+    private suspend fun addBook(book: ShelfBook): ShelfBook = withContext(Dispatchers.IO) {
         scanLock.withLock {
-            val added = if (book.addedAt > 0L) book else book.copy(addedAt = System.currentTimeMillis())
-            _books.update { old -> listOf(added) + old.filterNot { it.id == added.id } }
-            store.save(_books.value)
-            if (store.publicFiles.canUseRootDefault() ||
-                store.publicFiles.isCustom(PublicBookStorage.Kind.BOOKSHELF)) {
-                indexWriteLock.withLock {
-                    runCatching { saveIndexNow() }
-                        .onFailure { message("图书已加入，但 bookshelf 索引暂不可写：${it.message}") }
+            indexWriteLock.withLock {
+                val added = if (book.addedAt > 0L) book
+                    else book.copy(addedAt = System.currentTimeMillis())
+                BookshelfIndex.recordFileName(added) // fail if not yet published
+                val next = listOf(added) + _books.value.filterNot { it.id == added.id }
+                val snapshot = durableSnapshot(next, _favorites.value, _labels.value)
+                store.publicFiles.writeShelfIndex(BookshelfIndex.encode(snapshot))
+                store.save(next)
+                _books.value = next
+                added
+            }
+        }
+    }
+
+    /** PDF publication and its JSON update are a single observable operation.
+     * Never report '已完成' while the saved public record still lacks this PDF.
+     */
+    private suspend fun commitDecodedBook(book: ShelfBook) = withContext(Dispatchers.IO) {
+        scanLock.withLock {
+            indexWriteLock.withLock {
+                val current = _books.value
+                check(current.any { it.id == book.id }) { "图书已从书架移除" }
+                val next = current.map { previous ->
+                    if (previous.id == book.id) book.copy(
+                        addedAt = previous.addedAt, legacyOrder = previous.legacyOrder)
+                    else previous
                 }
+                store.publicFiles.writeShelfIndex(BookshelfIndex.encode(
+                    durableSnapshot(next, _favorites.value, _labels.value)))
+                store.save(next)
+                _books.value = next
             }
         }
     }
@@ -325,6 +365,7 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
         updateTask(task)
         _downloadTabNonce.value++
         val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            var downloadedSourceReady = false
             try {
                 val incoming = downloadSlots.withPermit {
                     withContext(Dispatchers.IO) {
@@ -343,15 +384,17 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
                         transfer.fetch(bookTask, key)
                     }
                 }
+                downloadedSourceReady = true
                 currentCoroutineContext().ensureActive()
                 val id = UUID.randomUUID().toString()
                 var book = withContext(Dispatchers.IO) {
-                    engine.inspect(incoming, id, bookTask.ssid)
+                    engine.inspect(incoming, id, bookTask.ssid).let { examined ->
+                        examined.copy(ssid = examined.ssid.ifBlank { bookTask.ssid })
+                    }
                 }
                 currentCoroutineContext().ensureActive()
                 val named = withContext(Dispatchers.IO) { engine.renameDownloaded(incoming, book) }
-                book = book.copy(filename = named.name,
-                    ssid = book.ssid.ifBlank { bookTask.ssid })
+                book = book.copy(filename = named.name)
                 val existingBook = _books.value.firstOrNull { candidate ->
                     candidate.type == "PDZ" &&
                         (candidate.publicPdzName == named.name ||
@@ -368,17 +411,23 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
                     message("书架已存在内容相同的图书，不重复下载入库")
                     return@launch
                 }
-                addBook(book)
-                mirror(book, PublicBookStorage.Kind.PDZ)?.let(::message)
-                reviseTask(task.id) { it.copy(name = book.title, stage = "等待解码",
+                // Publish PDZ -> commit matching bookshelf JSON -> show the book.
+                // A failed public copy or JSON write keeps the original file,
+                // but must not create a volatile 'ghost' bookshelf entry.
+                val published = publishCopy(book, PublicBookStorage.Kind.PDZ)
+                val admitted = addBook(published)
+                reviseTask(task.id) { it.copy(name = admitted.title, stage = "等待解码",
                     downloaded = named.length(), totalBytes = named.length()) }
-                predecode(book, task.id)
+                predecode(admitted, task.id)
             } catch (_: CancellationException) {
                 reviseTask(task.id) { it.copy(stage = "已取消", error = null) }
             } catch (exc: Exception) {
                 val safe = DownloadPolicy.displaySafeError(exc)
-                reviseTask(task.id) { it.copy(stage = "下载失败", error = safe) }
-                message("机构图书下载失败：$safe")
+                val stage = if (downloadedSourceReady) "下载完成（入库失败）" else "下载失败"
+                reviseTask(task.id) { it.copy(stage = stage, error = safe) }
+                message(if (downloadedSourceReady)
+                    "PDZ 已下载但书架入库未完成，原始文件已保留：$safe"
+                    else "机构图书下载失败：$safe")
             } finally {
                 downloadJobs.remove(task.id)
             }
@@ -431,11 +480,11 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
                     return@launch
                 }
                 val book = withContext(Dispatchers.IO) { engine.importFile(resolver, uri, filename) }
-                addBook(book)
-                val issue = mirror(book, if (book.type == "PDZ") PublicBookStorage.Kind.PDZ
-                    else PublicBookStorage.Kind.PDF)
-                message(if (issue == null) "已导入并保存：${book.title}" else "已导入：${book.title}。$issue")
-                if (book.type == "PDZ") predecode(book)
+                val published = publishCopy(book, if (book.type == "PDZ")
+                    PublicBookStorage.Kind.PDZ else PublicBookStorage.Kind.PDF)
+                val admitted = addBook(published)
+                message("已导入并建立书架 JSON：${admitted.title}")
+                if (admitted.type == "PDZ") predecode(admitted)
             } catch (exc: Exception) { message("导入失败：${exc.message}") }
         }
     }
@@ -461,12 +510,22 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
                             totalPages = total, error = null) }
                     }
                 }
-                revise(decoded)
-                val issue = mirror(decoded, PublicBookStorage.Kind.PDF)
-                reviseTask(task.id) { it.copy(stage = if (issue == null) "已完成" else "解码完成（公共保存失败）",
-                    decodedPages = decoded.totalPages ?: 0,
-                    totalPages = decoded.totalPages, error = issue) }
-                if (issue != null) message(issue)
+                try {
+                    val published = publishCopy(decoded, PublicBookStorage.Kind.PDF)
+                    commitDecodedBook(published)
+                    reviseTask(task.id) { it.copy(stage = "已完成",
+                        decodedPages = decoded.totalPages ?: 0,
+                        totalPages = decoded.totalPages, error = null) }
+                } catch (publicationError: Exception) {
+                    // The PDZ already has a durable JSON record. Keep it there;
+                    // do not claim conversion+public persistence has completed.
+                    revise(decoded)
+                    val reason = "PDF 或 bookshelf JSON 保存失败：${publicationError.message}"
+                    reviseTask(task.id) { it.copy(stage = "解码完成（公共保存失败）",
+                        decodedPages = decoded.totalPages ?: 0,
+                        totalPages = decoded.totalPages, error = reason) }
+                    message(reason)
+                }
             } catch (_: CancellationException) {
                 reviseTask(task.id) { it.copy(stage = "已中断") }
             } catch (exc: Exception) {
@@ -512,7 +571,7 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
                         val labels = _labels.value.map { it.copy(bookIds = it.bookIds - book.id) }
                         // Commit the removal to per-book JSON first. If the index
                         // cannot be written, do NOT claim a successful removal.
-                        val snapshot = BookshelfIndex.Snapshot(remaining, favorites, labels)
+                        val snapshot = durableSnapshot(remaining, favorites, labels)
                         store.publicFiles.writeShelfIndex(BookshelfIndex.encode(snapshot))
                         store.save(remaining)
                         labelsStore.saveFavorites(favorites)
@@ -554,19 +613,51 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
             try {
                 scanLock.withLock {
                     val public = store.publicFiles
-                    val text = public.readShelfIndex()
-                    if (text == null) {
-                        // First run or upgrade: preserve books previously imported
-                        // into the app, but do NOT enroll arbitrary PDZ/PDF files.
-                        indexWriteLock.withLock { saveIndexNow() }
-                        scanComplete = true
-                        if (!quiet) message("bookshelf 目录尚无记录，保留当前手动导入的 ${_books.value.size} 本书")
-                        return@withLock
+                    var text = public.readShelfIndex()
+                    // A previous buggy version may have created labels.json but
+                    // never created any book records. Recover these once too.
+                    val snapshotBeforeMigration = text?.let(BookshelfIndex::decode)
+                    if (text == null || (snapshotBeforeMigration?.books?.isEmpty() == true &&
+                            store.legacyIndexMigrationPending())) {
+                        // One-time upgrade only: recover old preferences with an
+                        // existing user-visible PDZ/PDF. Write JSON FIRST, then
+                        // treat that JSON as the sole source on all future scans.
+                        val legacy = if (store.legacyIndexMigrationPending()) store.load()
+                            .filter { old ->
+                                (old.type == "PDZ" && old.publicPdzName?.let { public.sourceForReading(
+                                    PublicBookStorage.Kind.PDZ, it, store.bookFolder)?.isFile } == true) ||
+                                (old.type == "PDF" && old.publicPdfName?.let { public.sourceForReading(
+                                    PublicBookStorage.Kind.PDF, it, store.pdfFolder)?.isFile } == true)
+                            }.distinctBy { it.id } else emptyList()
+                        if (legacy.isNotEmpty()) {
+                            indexWriteLock.withLock {
+                                public.writeShelfIndex(BookshelfIndex.encode(
+                                    BookshelfIndex.Snapshot(legacy,
+                                        snapshotBeforeMigration?.favorites.orEmpty() + _favorites.value,
+                                        _labels.value.ifEmpty { snapshotBeforeMigration?.labels.orEmpty() })))
+                            }
+                            text = public.readShelfIndex()
+                                ?: error("旧书架迁移后未找到新 JSON")
+                        } else {
+                            _books.value = emptyList()
+                            store.save(emptyList())
+                            store.markLegacyIndexMigrated()
+                            scanComplete = true
+                            if (!quiet) message("bookshelf 目录没有图书 JSON，书架为空")
+                            return@withLock
+                        }
                     }
-                    val snapshot = BookshelfIndex.decode(text)
-                    // Preserve old Fix5 v1 records without discovering arbitrary
-                    // PDZ/PDF files; migrate to independent per-book JSON files.
-                    indexWriteLock.withLock { public.migrateLegacyIndexIfPresent() }
+                    val snapshot = BookshelfIndex.decode(requireNotNull(text))
+                    // Migrate both old index.json and UUID.json records without
+                    // ever discovering arbitrary PDZ/PDF files.
+                    indexWriteLock.withLock {
+                        // A migration conflict must not prevent the existing
+                        // UUID JSON from still being read on this startup.
+                        runCatching {
+                            public.migrateLegacyIndexIfPresent()
+                            public.migrateLegacyRecordNamesIfPresent()
+                        }.onFailure { message("旧书架 JSON 命名迁移未完成，原记录已保留：${it.message}") }
+                    }
                     val available = mutableListOf<ShelfBook>()
                     val previous = _books.value.associateBy { it.id }
                     val indexedBooks = snapshot.books.distinctBy { it.id }
@@ -600,6 +691,7 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
                     val labels = snapshot.labels.map { it.copy(bookIds = it.bookIds.intersect(ids)) }
                     labelsStore.saveFavorites(favorites); _favorites.value = favorites
                     labelsStore.saveLabels(labels); _labels.value = labels
+                    store.markLegacyIndexMigrated()
                     scanComplete = true
                     // Do NOT call saveIndexNow here: missing files could be due
                     // to temporary storage disconnection and must not erase JSON.
@@ -654,7 +746,7 @@ class OsrViewModel(application: Application): AndroidViewModel(application) {
         }
     }
     private fun saveIndexNow() {
-        val snapshot = BookshelfIndex.Snapshot(_books.value, _favorites.value, _labels.value)
+        val snapshot = durableSnapshot(_books.value, _favorites.value, _labels.value)
         store.publicFiles.writeShelfIndex(BookshelfIndex.encode(snapshot))
     }
 

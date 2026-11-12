@@ -31,4 +31,12 @@ with fitz.open(pdf) as doc:
   assert len(list(page.annots() or []))==0
   assert abs(page.rect.width - 64*f)<.001
  print('PASS PyMuPDF: both 02H and 11H composite pages preserve two layers, positions and JPEG bytes')
+with fitz.open(str(__import__('pathlib').Path(pdf).parent / 'clipped.pdf')) as clipped:
+ photos=[x for x in clipped[1].get_images(full=True) if clipped.xref_get_key(x[0],'Filter')[1]=='/DCTDecode']
+ assert len(photos)==1
+ rect=clipped[1].get_image_rects(photos[0][0])[0]
+ page=clipped[1].rect
+ assert rect.intersects(page) and (rect.x1>page.x1 or rect.y1>page.y1), (rect,page)
+ assert clipped.xref_stream_raw(photos[0][0])==open(jpg,'rb').read()
+print('PASS partial-overflow JPEG remains byte-exact, PDF page boundary clips display')
 PY

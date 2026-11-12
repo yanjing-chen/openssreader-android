@@ -23,8 +23,8 @@ esac
 [[ -z "$(git -C "$TARGET" status --porcelain)" ]] || { echo '原有 Git 仓库有未提交改动，请先处理。' >&2; exit 3; }
 git -C "$TARGET" fetch origin main --tags
 [[ "$(git -C "$TARGET" rev-parse HEAD)" == "$(git -C "$TARGET" rev-parse origin/main)" ]] || { echo '本地 main 与远程不同步，拒绝覆盖。' >&2; exit 3; }
-if git -C "$TARGET" ls-remote --exit-code --tags origin refs/tags/v1.0.3 >/dev/null 2>&1; then
-    echo '远程 v1.0.3 标签已存在，本脚本不会覆盖已有发布。' >&2
+if git -C "$TARGET" ls-remote --exit-code --tags origin refs/tags/v1.0.7 >/dev/null 2>&1; then
+    echo '远程 v1.0.7 标签已存在，本脚本不会覆盖已有发布。' >&2
     exit 3
 fi
 # Keep the remote working tree as lean as the current full source bundle.
@@ -55,6 +55,6 @@ fi
 printf '\n只推送源码至 main，不创建 tag；输入 yes 确认：'
 read -r CONFIRM
 [[ "$CONFIRM" == 'yes' ]] || { echo '未提交、未推送；已复制文件，请自行检查工作树。'; exit 0; }
-git -C "$TARGET" commit -m 'Prepare Android 1.0.3: GeckoView native multi-tab and bookshelf improvements'
+git -C "$TARGET" commit -m 'Prepare Android 1.0.7 candidate: Gecko tab titles and subframe book handoff'
 git -C "$TARGET" push origin main
-echo '已推送 main。当前多标签版已实机验收；请等待这个 commit 的 CI 通过，再运行正式发布脚本创建 v1.0.3 标签。'
+echo '已推送 main。本次标签栏及子框架下载修复尚未实机验收，请等待这个 commit 的 CI 通过，再运行正式发布脚本创建 v1.0.7 标签。'

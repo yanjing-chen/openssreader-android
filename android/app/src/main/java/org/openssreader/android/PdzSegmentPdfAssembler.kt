@@ -57,9 +57,11 @@ object PdzSegmentPdfAssembler {
                         if (doc.isEncrypted) throw UnsupportedPdzPages("拒绝对加密 PDF 片段进行重排")
                         doc.numberOfPages
                     }
-                    val platform = actualPages(part)
-                    if (parsed != platform || parsed < 1)
-                        throw UnsupportedPdzPages("PDF 分段页数在两种解析器之间不一致")
+                    if (parsed < 1)
+                        throw UnsupportedPdzPages("PDF 分段没有可验证页面")
+                    // Some valid fragments cannot be parsed by Android PdfRenderer
+                    // until PDFBox has merged them into a canonical document.
+                    // Keep PDFBox structural checks here; test Android on the final PDF.
                     prepared = part
                     parsed
                 },

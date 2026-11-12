@@ -20,23 +20,28 @@ import java.util.Locale
  * silently publish to Downloads, and never request root/superuser privileges.
  * SAF directory picks remain independently available for both file kinds.
  */
-class PublicBookStorage(private val context: Context) {
+class PublicBookStorage(private val context: Context, private val isolatedTestRoot: File? = null) {
     enum class Kind(val key: String, val label: String, val mime: String, val subdir: String) {
         PDZ("pdz", "PDZ", "application/octet-stream", "pdz"),
         PDF("pdf", "PDF", "application/pdf", "pdf"),
         BOOKSHELF("bookshelf", "BOOKSHELF", "application/json", "bookshelf")
     }
     private val resolver get() = context.contentResolver
-    private val prefs = context.getSharedPreferences("osr-public-storage-v1", Context.MODE_PRIVATE)
+    // Instrumented tests use separate preferences and an app-cache root. Tests
+    // can never pick up a user's SAF folder or overwrite real bookshelf files.
+    private val prefs = context.getSharedPreferences(
+        isolatedTestRoot?.let { "osr-public-storage-test-${it.name}" }
+            ?: "osr-public-storage-v1", Context.MODE_PRIVATE)
     private fun prefKey(kind: Kind) = "folder-${kind.key}"
     private fun relativePath(kind: Kind) = "${Environment.DIRECTORY_DOWNLOADS}/OpenSSReader/${kind.subdir}/"
 
     fun canUseRootDefault(): Boolean =
-        Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()
+        isolatedTestRoot != null || (Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager())
 
     @Suppress("DEPRECATION")
     private fun rootDirectory(kind: Kind): File =
-        File(Environment.getExternalStorageDirectory(), "OpenSSReader/${kind.subdir}")
+        isolatedTestRoot?.let { File(it, kind.subdir) }
+            ?: File(Environment.getExternalStorageDirectory(), "OpenSSReader/${kind.subdir}")
 
     fun folderLabel(kind: Kind): String {
         val uri = prefs.getString(prefKey(kind), null)?.let(Uri::parse)
@@ -184,11 +189,14 @@ class PublicBookStorage(private val context: Context) {
                 while (cursor.moveToNext()) cursor.getString(0)?.takeIf(::validName)?.let(::add)
             } } ?: emptyList()
     }
-    /** One metadata record per book, plus labels.json for global tag names.
-     * A legacy index.json is read only when no v2 records have been written. */
+    /** One JSON per book, named after the PUBLIC PDZ/PDF, plus labels.json.
+     * Existing UUID-named JSON is supported and migrated without data loss.
+     */
     private fun bookshelfNames(): List<String> = existingNames(Kind.BOOKSHELF)
-    private fun recordName(id: String) = "$id.json"
     private fun isRecordName(name: String): Boolean =
+        validName(name) && name.endsWith(".json", ignoreCase = true) &&
+            name !in setOf("index.json", "labels.json") && !name.startsWith(".")
+    private fun isLegacyUuidRecord(name: String): Boolean =
         name.endsWith(".json") && name.removeSuffix(".json")
             .matches(Regex("[a-fA-F0-9-]{36}"))
 
@@ -236,10 +244,18 @@ class PublicBookStorage(private val context: Context) {
         val names = bookshelfNames()
         val recordNames = names.filter(::isRecordName).sorted()
         if (recordNames.isEmpty() && "labels.json" !in names) return readShelfText("index.json")
-        val records = recordNames.map { name ->
+        // If a process was interrupted during UUID-to-filename migration, both
+        // names may exist. Prefer the correctly named copy; never show duplicates.
+        val byId = linkedMapOf<String, BookshelfIndex.Record>()
+        for (name in recordNames) {
             val content = readShelfText(name) ?: error("书架记录丢失：$name")
-            BookshelfIndex.decodeRecord(content)
+            val record = BookshelfIndex.decodeRecord(content)
+            if (record.book.id !in byId ||
+                runCatching { BookshelfIndex.recordFileName(record.book) == name }.getOrDefault(false)) {
+                byId[record.book.id] = record
+            }
         }
+        val records = byId.values.toList()
         val definitions = readShelfText("labels.json")?.let(BookshelfIndex::decodeLabelDefinitions)
             .orEmpty()
         val grouped = definitions.map { label ->
@@ -260,24 +276,57 @@ class PublicBookStorage(private val context: Context) {
         writeShelfIndex(old)
     }
 
-    /** Write all records first; only then remove obsolete book records.
-     * Removing a book removes its per-book JSON, never the PDZ/PDF originals. */
+    /** Commit the public book records BEFORE the book can appear in the UI.
+     * Do not overwrite a different book whose public filename has the same stem.
+     * First write/verify every new record, THEN remove obsolete/UUID records.
+     */
     @Synchronized fun writeShelfIndex(contents: String) {
         val state = BookshelfIndex.decode(contents)
-        val ids = state.books.filter { it.publicPdzName != null || it.publicPdfName != null }
-            .map { it.id }.toSet()
-        for (book in state.books.filter { it.publicPdzName != null || it.publicPdfName != null }) {
+        val books = state.books.filter { it.publicPdzName != null || it.publicPdfName != null }
+        val targetByName = linkedMapOf<String, ShelfBook>()
+        for (book in books) {
             require(book.id.matches(Regex("[a-fA-F0-9-]{36}")))
-            writeShelfText(recordName(book.id), BookshelfIndex.encodeRecord(book,
+            val name = BookshelfIndex.recordFileName(book)
+            require(targetByName.putIfAbsent(name, book) == null) {
+                "两本不同的图书使用相同 JSON 文件名：$name"
+            }
+        }
+        val oldNames = bookshelfNames().filter(::isRecordName)
+        val existing = oldNames.associateWith { name ->
+            readShelfText(name)?.let(BookshelfIndex::decodeRecord)
+                ?: error("书架记录丢失：$name")
+        }
+        for ((name, book) in targetByName) {
+            val previous = existing[name]
+            require(previous == null || previous.book.id == book.id) {
+                "书架 JSON 文件名冲突：$name；不会覆盖另一册图书"
+            }
+        }
+        for ((name, book) in targetByName) {
+            val data = BookshelfIndex.encodeRecord(book,
                 book.id in state.favorites,
-                state.labels.filter { book.id in it.bookIds }.map { it.id }.toSet()))
+                state.labels.filter { book.id in it.bookIds }.map { it.id }.toSet())
+            writeShelfText(name, data)
+            val persisted = readShelfText(name)?.let(BookshelfIndex::decodeRecord)
+            check(persisted != null && persisted.book.id == book.id &&
+                persisted.book.publicPdzName == book.publicPdzName &&
+                persisted.book.publicPdfName == book.publicPdfName) {
+                "书架 JSON 写入后验证失败：$name"
+            }
         }
         writeShelfText("labels.json", BookshelfIndex.encodeLabelDefinitions(state.labels))
-        val obsolete = bookshelfNames().filter(::isRecordName)
-            .filter { it.removeSuffix(".json") !in ids }
-        obsolete.forEach(::deleteShelfText)
-        // v1 is only retired after the new records and tag definitions exist.
+        // Only delete files known to be book records, not arbitrary user JSON.
+        oldNames.filter { it !in targetByName }.forEach(::deleteShelfText)
         if ("index.json" in bookshelfNames()) deleteShelfText("index.json")
+    }
+
+    /** Upgrade the older UUID.json naming to title/author/... .json on startup.
+     * No PDZ or PDF directories are scanned, and no original file is modified.
+     */
+    @Synchronized fun migrateLegacyRecordNamesIfPresent() {
+        if (bookshelfNames().none(::isLegacyUuidRecord)) return
+        val index = readShelfIndex() ?: return
+        writeShelfIndex(index)
     }
 
     /** Delete exactly the user-selected public PDZ or PDF, never a derived path. */

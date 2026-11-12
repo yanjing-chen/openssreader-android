@@ -21,12 +21,17 @@ fun main(args: Array<String>) {
         source + byteArrayOf(5),
         source.copyOf().apply { this[15]=0x10 },
         source.copyOf().apply { this[24]=139.toByte() },
-        source.copyOf().apply { this[140+256] = (this[140+256].toInt() xor 0x20).toByte() },
-        source.copyOf().apply { this[12+4] = (this[12+4].toInt() xor 7).toByte() }
+        source.copyOf().apply { this[140+256] = (this[140+256].toInt() xor 0x20).toByte() }
     )
     for ((i,damaged) in damagedCases.withIndex()) {
         val rejected=runCatching { OneAhPdfRecovery.recover(damaged) }.isFailure
         check(rejected) { "Damaged 1AH fixture $i incorrectly accepted" }
     }
-    println("PASS 1AH PDF recovery $count synthetic cases byte-exact, six malformed cases rejected")
+    // Deliberately invalidate the header-derived coefficients while retaining
+    // the vendor-mangled zlib stream. Linux's C100 bounded search can still
+    // restore the precise, fully Adler-verified PDF; Android must now match.
+    val fallback = source.copyOf().apply { this[12+4] = (this[12+4].toInt() xor 7).toByte() }
+    val recoveredFallback = OneAhPdfRecovery.recover(fallback)
+    check(recoveredFallback.repaired && recoveredFallback.pdfBytes.contentEquals(pdf))
+    println("PASS 1AH PDF recovery $count exact cases, ${damagedCases.size} malformed cases rejected, bounded validated fallback")
 }

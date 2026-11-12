@@ -48,7 +48,7 @@ object JpegPdfInput {
                 val width = (at(jpeg, pos + 5) shl 8) or at(jpeg, pos + 6)
                 val channels = at(jpeg, pos + 7)
                 if (width !in 1..20000 || height !in 1..20000 ||
-                    width.toLong() * height > 80_000_000L || channels !in listOf(1, 3) ||
+                    width.toLong() * height > PdzCompatibilityLimits.maxPixels || channels !in listOf(1, 3, 4) ||
                     len < 8 + 3 * channels) {
                     throw Invalid("不支持的 JPEG 页尺寸或颜色通道")
                 }
@@ -72,6 +72,12 @@ object JpegPdfInput {
  * 300 DPI controls *physical PDF page size*, not scan resolution or pixels.
  */
 class LosslessJpegPdf(private val sink: FileOutputStream, private val dpi: Int = 300) {
+    private fun colorSpace(channels: Int) = when (channels) {
+        1 -> "/DeviceGray"
+        3 -> "/DeviceRGB"
+        4 -> "/DeviceCMYK"
+        else -> throw IllegalArgumentException("Unsupported JPEG channels: $channels")
+    }
     private val positions = arrayListOf(0L)
     private val pageRefs = arrayListOf<Int>()
     private var written = 0L
@@ -106,7 +112,7 @@ class LosslessJpegPdf(private val sink: FileOutputStream, private val dpi: Int =
         val w = "%.8f".format(java.util.Locale.US, width)
         val h = "%.8f".format(java.util.Locale.US, height)
         streamObject(im, "/Type /XObject /Subtype /Image /Width ${info.width} /Height ${info.height} " +
-            "/ColorSpace ${if (info.channels == 1) "/DeviceGray" else "/DeviceRGB"} " +
+            "/ColorSpace ${colorSpace(info.channels)} " +
             "/BitsPerComponent 8 /Filter /DCTDecode", jpeg)
         val operators = "q\n$w 0 0 $h 0 0 cm\n/Im0 Do\nQ\n".toByteArray(StandardCharsets.US_ASCII)
         streamObject(content, "", operators)
@@ -151,11 +157,10 @@ class LosslessJpegPdf(private val sink: FileOutputStream, private val dpi: Int =
         val pixels = bg.packedWhiteOne
         val pitch = (bg.width + 7L) / 8L
         require(bg.width in 1..20000 && bg.height in 1..30000 &&
-            bg.width.toLong() * bg.height <= 80_000_000L &&
+            bg.width.toLong() * bg.height <= PdzCompatibilityLimits.maxPixels &&
             pixels.size.toLong() == pitch * bg.height)
         require(photo.x >= 0 && photo.y >= 0 && photo.drawWidth > 0 && photo.drawHeight > 0 &&
-            photo.x.toLong() + photo.drawWidth <= bg.width &&
-            photo.y.toLong() + photo.drawHeight <= bg.height)
+            photo.x < bg.width && photo.y < bg.height)
         val compressed = ByteArrayOutputStream()
         DeflaterOutputStream(compressed, Deflater(Deflater.BEST_SPEED)).use {
             it.write(pixels)
@@ -170,7 +175,7 @@ class LosslessJpegPdf(private val sink: FileOutputStream, private val dpi: Int =
             compressed.toByteArray())
         streamObject(photoId,
             "/Type /XObject /Subtype /Image /Width ${photo.info.width} /Height ${photo.info.height} " +
-            "/ColorSpace ${if (photo.info.channels == 1) "/DeviceGray" else "/DeviceRGB"} " +
+            "/ColorSpace ${colorSpace(photo.info.channels)} " +
             "/BitsPerComponent 8 /Filter /DCTDecode", photo.jpeg)
         val yBottom = bg.height - photo.y - photo.drawHeight
         val commands = ("q\n$pageWidth 0 0 $pageHeight 0 0 cm\n/Im0 Do\nQ\n" +

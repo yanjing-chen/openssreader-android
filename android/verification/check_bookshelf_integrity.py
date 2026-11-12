@@ -16,7 +16,7 @@ assert 'public.readShelfIndex()' in scan
 assert 'public.existingNames(' not in scan, 'Rescan must never enumerate arbitrary PDZ/PDF files'
 assert 'engine.inspect(' not in scan, 'Rescan must not decode arbitrary books'
 assert '_books.value = available' in scan and 'store.save(available)' in scan
-assert 'if (text == null)' in scan and 'saveIndexNow()' in scan
+assert 'if (text == null ||' in scan and 'store.legacyIndexMigrationPending()' in scan
 assert 'if (!pdzPresent && !pdfPresent)' in scan, 'Index must verify referenced files'
 
 remove = view.split('    fun removeFromShelf(', 1)[1].split('    /** The bookshelf directory', 1)[0]
@@ -24,9 +24,25 @@ assert remove.index('store.publicFiles.writeShelfIndex(') < remove.index('delete
 assert 'remaining = _books.value.filterNot' in remove
 assert 'deletePdz &&' in remove and 'deletePdf &&' in remove
 assert 'scanLock.withLock' in remove and 'indexWriteLock.withLock' in remove
-assert 'private suspend fun addBook' in view and 'scanLock.withLock' in view.split('private suspend fun addBook', 1)[1].split('private fun revise',1)[0]
+admit = view.split('private suspend fun addBook', 1)[1].split('private fun revise',1)[0]
+assert 'scanLock.withLock' in admit and 'indexWriteLock.withLock' in admit
+assert admit.index('writeShelfIndex(') < admit.index('store.save(next)') < admit.index('_books.value = next')
+assert 'BookshelfIndex.recordFileName(added)' in admit
+assert 'store.publicFiles.writeShelfIndex(' in view
+assert 'durableSnapshot(' in view
+publish = view.split('private suspend fun publishCopy(', 1)[1].split('fun message(text:',1)[0]
+assert 'store.publicFiles.publish(' in publish and 'book.copy(publicPdzName = actualName)' in publish
+transfer = view.split('fun acceptBookLink(', 1)[1].split('fun import(',1)[0]
+assert transfer.index('publishCopy(book, PublicBookStorage.Kind.PDZ)') < transfer.index('addBook(published)') < transfer.index('predecode(admitted, task.id)')
+finish = view.split('fun predecode(', 1)[1].split('fun chapters(',1)[0]
+assert finish.index('publishCopy(decoded, PublicBookStorage.Kind.PDF)') < finish.index('commitDecodedBook(published)') < finish.index('stage = "已完成"')
+assert 'migrateLegacyRecordNamesIfPresent()' in scan
 assert 'rescanBookshelf()' not in view.split('fun import(', 1)[1].split('fun cover(', 1)[0], 'Import must not trigger a full rescan'
 
+assert 'BookshelfIndex.recordFileName(book)' in storage
+assert 'migrateLegacyRecordNamesIfPresent' in storage
+assert 'private fun isRecordName(name: String)' in storage
+assert 'private fun recordName(id: String)' not in storage
 assert 'cleanTrashedPdzArtifacts' not in storage
 assert '清理 .fmtrashed' not in ui
 # Compact screens use the category drawer; expanded screens retain the sidebar.

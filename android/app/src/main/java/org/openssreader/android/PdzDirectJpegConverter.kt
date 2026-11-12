@@ -23,9 +23,8 @@ import java.util.UUID
  */
 class UnsupportedPdzPages(message: String) : IllegalStateException(message)
 object PdzDirectJpegConverter {
-    private const val MAX_PAGE_SIZE = 64L * 1024L * 1024L
     private fun readPage(source: RandomAccessFile, entry: PdzEntry): ByteArray {
-        if (entry.size !in 20..MAX_PAGE_SIZE || entry.size > Int.MAX_VALUE)
+        if (entry.size !in 20..org.openssreader.android.core.PdzCompatibilityLimits.maxJpegBytes || entry.size > Int.MAX_VALUE)
             throw UnsupportedPdzPages("PDG 文件尺寸超过安全限制")
         val data = ByteArray(entry.size.toInt())
         source.seek(entry.offset)
@@ -97,7 +96,7 @@ object PdzDirectJpegConverter {
      * run PDFs for hybrid 1AH/individual-PDG books. No unknown page is skipped. */
     fun convertPages(source: File, pages: List<PdzEntry>, destination: File,
                      pageBookKey: ByteArray? = null, progress: (Int, Int) -> Unit): Int {
-        if (pages.isEmpty() || pages.size > 100_000)
+        if (pages.isEmpty() || pages.size > org.openssreader.android.core.PdzCompatibilityLimits.MAX_BOOK_PAGES)
             throw UnsupportedPdzPages("图书页数超出支持范围")
         if (destination.exists()) throw UnsupportedPdzPages("目标 PDF 缓存已存在，拒绝覆盖")
         // Preflight the full book before creating a temporary PDF.
