@@ -13,6 +13,7 @@ python3 verification/check_bookshelf_persistence.py
 python3 verification/check_mobile_adaptive.py
 python3 verification/check_shelf_preferences.py
 python3 verification/check_reader_tap_navigation.py
+python3 verification/check_reader_enhancement_ui.py
 python3 verification/check_compact_section_menu.py
 python3 verification/check_hd_covers.py
 python3 verification/check_release_current.py

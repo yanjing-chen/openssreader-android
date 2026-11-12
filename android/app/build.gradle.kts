@@ -36,6 +36,8 @@ android {
         }
     }
     buildTypes {
+        // Keep official 1.0.7 release identity untouched until enhancement is accepted.
+        debug { versionNameSuffix = "-enhance-e3" }
         release {
             isMinifyEnabled = false
             if (releaseSigningReady) signingConfig = signingConfigs.getByName("production")

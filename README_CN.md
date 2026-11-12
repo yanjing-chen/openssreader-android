@@ -1,3 +1,5 @@
+> **扫描阅读增强 E3 候选**：见 [`READER_ENHANCEMENT_E3_CN.md`](READER_ENHANCEMENT_E3_CN.md)。支持顶部 radio 点选、原图/增强切换、逐页自动/单基准镜像、相邻页差异提示补选第二基准。Android 编译及真机验收仍需在本地完成。
+
 # OpenSSReader Android 1.0.6
 
 > **当前版本（1.0.7 下载回退候选）：** 下载协议和网络下载过程已恢复为最初上传的 Android 1.0.3 源码；保留已通过验收的书城标签栏和书架同名 JSON。图像阅读工具栏不做特殊接管。详见 `DOWNLOAD_RESTORE_FROM_ORIGINAL_1_0_3_CN.md`。

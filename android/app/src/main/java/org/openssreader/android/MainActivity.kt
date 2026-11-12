@@ -1,6 +1,10 @@
 package org.openssreader.android
 
 import android.graphics.Bitmap
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import android.graphics.pdf.PdfRenderer
 import android.os.Bundle
 import android.content.res.Configuration
@@ -45,6 +49,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -859,10 +864,10 @@ private fun SettingsPage(grid: Boolean, bookshelfSort: BookshelfSort, fields: Se
         Spacer(Modifier.height(12.dp))
         Text("默认阅读模式", style = MaterialTheme.typography.titleSmall)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ReaderLayout.entries.forEach { layout ->
-                FilterChip(selected = readerLayout == layout,
-                    onClick = { model.setReaderLayout(layout) },
-                    label = { Text(layout.label) })
+            listOf(ReaderLayout.SINGLE, ReaderLayout.SPREAD, ReaderLayout.CONTINUOUS).forEach { layout ->
+                ReaderRadioChoice(layout.label, selected = readerLayout == layout) {
+                    model.setReaderLayout(layout)
+                }
             }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1002,10 +1007,89 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
     var jumpValue by rememberSaveable { mutableStateOf("") }
     var jumpRequest by remember { mutableIntStateOf(0) }
     var showBars by rememberSaveable { mutableStateOf(true) }
+    val applicationContext = LocalContext.current
+    val enhancementStore = remember(applicationContext) { ReaderEnhancementStore(applicationContext) }
+    var enhancement by remember(book.id) { mutableStateOf(enhancementStore.read(book.id)) }
+    fun saveEnhancement(settings: ReaderEnhanceSettings) {
+        enhancement = settings.normalized()
+        enhancementStore.write(book.id, enhancement)
+    }
+    var enhancementSheet by rememberSaveable { mutableStateOf(false) }
+    var previewOriginal by remember { mutableStateOf(false) }
+    var detectingReference by remember(book.id) { mutableStateOf(false) }
+    var referenceMessage by remember(book.id) { mutableStateOf("") }
+    val referenceScope = rememberCoroutineScope()
+    fun generateReferenceCrop(index: Int, second: Boolean = false) {
+        if (detectingReference) return
+        if (index !in 0 until maxPage) {
+            referenceMessage = "页码无效：请输入 1–$maxPage"
+            return
+        }
+        val currentPrimary = enhancement.referenceCrop
+        if (second && (currentPrimary == null || ((index - currentPrimary.pageIndex) and 1) == 0)) {
+            referenceMessage = "第二基准页必须与首个基准页处于相反的左右页序列。"
+            return
+        }
+        detectingReference = true
+        referenceMessage = "正在分析第 ${index + 1} 页的内容边界…"
+        referenceScope.launch {
+            try {
+                val margin = enhancement.safeMargin
+                suspend fun analyze(candidate: Int): ReaderReferenceCrop? {
+                    val bitmap = withContext(Dispatchers.IO) { renderPdfPage(pdf, candidate, 1600) }
+                        ?: return null
+                    return withContext(Dispatchers.Default) {
+                        val job = currentCoroutineContext()
+                        ReaderBitmapEnhancer.detectReferenceCrop(bitmap, candidate, margin) {
+                            job.ensureActive()
+                        }
+                    }
+                }
+                val fixed = analyze(index)
+                if (fixed == null) {
+                    referenceMessage = "第 ${index + 1} 页无法可靠检测裁边；原设置未改变，请选普通正文页。"
+                } else if (second) {
+                    saveEnhancement(enhancement.copy(
+                        cropMode = ReaderCropMode.REFERENCE,
+                        secondReferenceCrop = fixed,
+                        recommendSecondReference = false,
+                        enabled = true))
+                    referenceMessage = "已补充第 ${index + 1} 页作为另一侧基准；左右页现在使用两套独立裁边参数。"
+                } else {
+                    // Compare one opposite-side neighbor. Do not silently impose a second
+                    // template: offer a second selection only if the difference is material.
+                    val adjacent = if (index + 1 < maxPage) index + 1 else index - 1
+                    val opposite = if (adjacent in 0 until maxPage) try {
+                        analyze(adjacent)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    } else null
+                    val recommend = opposite != null &&
+                        ReaderImageEnhancer.materiallyDifferentOppositePage(fixed, opposite)
+                    saveEnhancement(enhancement.copy(
+                        cropMode = ReaderCropMode.REFERENCE,
+                        referenceCrop = fixed,
+                        secondReferenceCrop = null,
+                        recommendSecondReference = recommend,
+                        enabled = true))
+                    referenceMessage = if (recommend)
+                        "第 ${index + 1} 页已设为基准。检测到左右页边距差异，建议再补选另一页作为第二基准页。"
+                    else "第 ${index + 1} 页已设为基准，另一侧页面按左右镜像裁边。"
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                referenceMessage = "基准页裁边分析失败，已保留原设置。"
+            } finally {
+                detectingReference = false
+            }
+        }
+    }
     val readerLayout by model.readerLayout.collectAsState()
     val continuous = readerLayout == ReaderLayout.CONTINUOUS
     val spread = readerLayout == ReaderLayout.SPREAD
-    var modeMenu by remember { mutableStateOf(false) }
     var scale by remember(book.id) { mutableFloatStateOf(1f) }
     var panX by remember(book.id) { mutableFloatStateOf(0f) }
     var panY by remember(book.id) { mutableFloatStateOf(0f) }
@@ -1042,6 +1126,45 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
         value = if (secondPage == null) Pair(false, null)
                 else Pair(false, withContext(Dispatchers.IO) { renderPdfPage(pdf, secondPage, 2100) })
     }
+    val effectiveEnhancement = if (previewOriginal) enhancement.copy(enabled = false)
+        else enhancement
+    // Keep raw PDF rendering keyed only by page, so changing enhancement settings
+    // never re-decodes PDZ or re-renders the PDF and remains instant to revert.
+    val enhancedLeft by produceState<Pair<ReaderEnhanceSettings?, Bitmap?>>(initialValue = null to null,
+        key1 = rendered.second, key2 = effectiveEnhancement) {
+        value = null to null
+        val original = rendered.second
+        if (original != null) {
+            val result = if (!effectiveEnhancement.enabled || !effectiveEnhancement.requiresProcessing()) original
+                else withContext(Dispatchers.Default) {
+                    val context = currentCoroutineContext()
+                    try { ReaderBitmapEnhancer.process(original, effectiveEnhancement, firstPage) { context.ensureActive() } }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { original }
+                }
+            value = effectiveEnhancement to result
+        }
+    }
+    val enhancedRight by produceState<Pair<ReaderEnhanceSettings?, Bitmap?>>(initialValue = null to null,
+        key1 = renderedRight.second, key2 = effectiveEnhancement) {
+        value = null to null
+        val original = renderedRight.second
+        if (original != null) {
+            val result = if (!effectiveEnhancement.enabled || !effectiveEnhancement.requiresProcessing()) original
+                else withContext(Dispatchers.Default) {
+                    val context = currentCoroutineContext()
+                    try { ReaderBitmapEnhancer.process(original, effectiveEnhancement, secondPage ?: firstPage) { context.ensureActive() } }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { original }
+                }
+            value = effectiveEnhancement to result
+        }
+    }
+    // Use the raw page while enhancement is being calculated, never stale results.
+    val shownLeft = if (enhancedLeft.first == effectiveEnhancement)
+        enhancedLeft.second ?: rendered.second else rendered.second
+    val shownRight = if (enhancedRight.first == effectiveEnhancement)
+        enhancedRight.second ?: renderedRight.second else renderedRight.second
     LaunchedEffect(page, readerLayout) { if (!continuous) model.savePage(book, firstPage) }
     LaunchedEffect(continuous, book.id) {
         if (continuous) {
@@ -1064,26 +1187,39 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
         panY = panY.coerceIn(-maxY, maxY)
     }
     Scaffold(topBar = {
-        if (showBars) TopAppBar(title = {
-            Text(book.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") } },
-            actions = {
-                Box {
-                    TextButton(onClick = { modeMenu = true }) {
-                        Icon(Icons.Default.ViewDay, null)
-                        Spacer(Modifier.width(4.dp))
-                        Text(readerLayout.label)
-                    }
-                    DropdownMenu(expanded = modeMenu, onDismissRequest = { modeMenu = false }) {
-                        ReaderLayout.entries.forEach { layout ->
-                            DropdownMenuItem(text = { Text(layout.label) }, onClick = {
-                                modeMenu = false
-                                model.setReaderLayout(layout)
-                            })
-                        }
+        if (showBars) Column(Modifier.fillMaxWidth()) {
+            TopAppBar(title = { Text(book.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                navigationIcon = { IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
+                } })
+            // Compact radio controls, horizontally scrollable on narrow phones;
+            // on a tablet the complete row fits naturally beside the layout modes.
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                listOf(ReaderLayout.SINGLE, ReaderLayout.SPREAD, ReaderLayout.CONTINUOUS).forEach { layout ->
+                    ReaderRadioChoice(layout.label, selected = readerLayout == layout) {
+                        model.setReaderLayout(layout)
                     }
                 }
-            })
+                VerticalDivider(Modifier.height(24.dp).padding(horizontal = 5.dp))
+                ReaderRadioChoice("原始图像", selected = !enhancement.enabled || previewOriginal) {
+                    previewOriginal = false
+                    saveEnhancement(enhancement.copy(enabled = false))
+                }
+                ReaderRadioChoice("扫描增强", selected = enhancement.enabled && !previewOriginal) {
+                    previewOriginal = false
+                    val selected = if (!enhancement.requiresProcessing())
+                        enhancement.copy(mode = ReaderEnhanceMode.CLEAN, enabled = true)
+                    else enhancement.copy(enabled = true)
+                    saveEnhancement(selected)
+                }
+                IconButton(onClick = { previewOriginal = false; enhancementSheet = true }) {
+                    Icon(Icons.Default.Settings, "扫描增强设置")
+                }
+            }
+        }
     }, bottomBar = {
         if (showBars) Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow)) {
             if (!continuous && maxPage > 1) Slider(value = page.toFloat(), onValueChange = {
@@ -1188,7 +1324,7 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
                                 scrollState.animateScrollToItem(destination)
                             }
                         }
-                    })
+                    }, enhancement = enhancement, showOriginal = previewOriginal)
                 }
             }
         } else {
@@ -1252,8 +1388,8 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
                     // create huge center margins for narrow scanned pages.
                     // The effective gap shrinks as the entire spread is zoomed.
                     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        val first = rendered.second!!
-                        val second = renderedRight.second!!
+                        val first = shownLeft!!
+                        val second = shownRight!!
                         val ratio1 = first.width.toFloat() / first.height
                         val ratio2 = second.width.toFloat() / second.height
                         val gap = 3.dp / scale
@@ -1271,12 +1407,27 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
                                 Modifier.width(sheetWidth2).fillMaxHeight(), contentScale = ContentScale.FillBounds)
                         }
                     }
-                } else Image(rendered.second!!.asImageBitmap(), "第 ${firstPage + 1} 页", Modifier.fillMaxSize()
+                } else Image(shownLeft!!.asImageBitmap(), "第 ${firstPage + 1} 页", Modifier.fillMaxSize()
                     .graphicsLayer(scaleX = scale, scaleY = scale, translationX = panX, translationY = panY),
                     contentScale = ContentScale.Fit)
             }
         }
     }
+    if (enhancementSheet) ReaderEnhancementSheet(
+        settings = enhancement,
+        onChange = ::saveEnhancement,
+        currentPage = firstPage,
+        maxPage = maxPage,
+        detectingReference = detectingReference,
+        referenceMessage = referenceMessage,
+        onGenerateReference = { index, second -> generateReferenceCrop(index, second) },
+        onDismiss = { enhancementSheet = false },
+        previewOriginal = previewOriginal,
+        onPreviewOriginal = {
+            previewOriginal = it
+            if (it) enhancementSheet = false // expose the full original page for comparison
+        }
+    )
     val availableChapters = chapters
     if (showToc && !availableChapters.isNullOrEmpty()) AlertDialog(onDismissRequest = { showToc = false },
         title = { Text("真实章节目录") }, text = {
@@ -1314,10 +1465,27 @@ private fun ReaderPage(model: OsrViewModel, book: ShelfBook, pdf: File, onBack: 
 }
 
 @Composable
-private fun ContinuousPdfPage(pdf: File, index: Int, onTap: (Float, Float) -> Unit) {
-    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = pdf.absolutePath, key2 = index) {
+private fun ContinuousPdfPage(pdf: File, index: Int, onTap: (Float, Float) -> Unit,
+    enhancement: ReaderEnhanceSettings, showOriginal: Boolean) {
+    val rawBitmap by produceState<Bitmap?>(initialValue = null, key1 = pdf.absolutePath, key2 = index) {
         value = withContext(Dispatchers.IO) { renderPdfPage(pdf, index, 1550) }
     }
+    val enhancedBitmap by produceState<Pair<ReaderEnhanceSettings?, Bitmap?>>(initialValue = null to null,
+        key1 = rawBitmap, key2 = enhancement, key3 = showOriginal) {
+        value = null to null
+        if (rawBitmap != null) {
+            val image = if (showOriginal || !enhancement.enabled || !enhancement.requiresProcessing())
+                rawBitmap else withContext(Dispatchers.Default) {
+                    val context = currentCoroutineContext()
+                    try { ReaderBitmapEnhancer.process(rawBitmap!!, enhancement, index) { context.ensureActive() } }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { rawBitmap }
+                }
+            value = enhancement to image
+        }
+    }
+    val bitmap = if (!showOriginal && enhancement.enabled && enhancedBitmap.first == enhancement)
+        enhancedBitmap.second ?: rawBitmap else rawBitmap
     var zoom by remember(pdf.absolutePath, index) { mutableFloatStateOf(1f) }
     var offsetX by remember(pdf.absolutePath, index) { mutableFloatStateOf(0f) }
     var offsetY by remember(pdf.absolutePath, index) { mutableFloatStateOf(0f) }
@@ -1360,6 +1528,212 @@ private fun ContinuousPdfPage(pdf: File, index: Int, onTap: (Float, Float) -> Un
         }
         Text("${index + 1}", style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** A single clear dot selection, never a chip/highlight-only pseudo selection. */
+@Composable
+private fun ReaderRadioChoice(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(Modifier.clickable(onClick = onClick).padding(end = 4.dp, top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        RadioButton(selected = selected, onClick = null, modifier = Modifier.size(34.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReaderEnhancementSheet(
+    settings: ReaderEnhanceSettings,
+    onChange: (ReaderEnhanceSettings) -> Unit,
+    currentPage: Int,
+    maxPage: Int,
+    detectingReference: Boolean,
+    referenceMessage: String,
+    onGenerateReference: (Int, Boolean) -> Unit,
+    onDismiss: () -> Unit,
+    previewOriginal: Boolean,
+    onPreviewOriginal: (Boolean) -> Unit
+) {
+    var strengthDraft by remember(settings.mode, settings.strength) {
+        mutableFloatStateOf(settings.strength.toFloat())
+    }
+    var marginDraft by remember(settings.safeMargin) {
+        mutableFloatStateOf(settings.safeMargin.toFloat())
+    }
+    var pageInput by remember { mutableStateOf("") }
+    var requestingSecond by remember { mutableStateOf(false) }
+    var showPageInput by remember { mutableStateOf(false) }
+    val typed = pageInput.toIntOrNull()
+    val validTyped = typed != null && typed in 1..maxPage &&
+        (!requestingSecond || (settings.referenceCrop != null &&
+            ((typed - 1 - settings.referenceCrop.pageIndex) and 1) != 0))
+    val primary = settings.referenceCrop
+    val suggestedOpposite = primary?.let {
+        if (it.pageIndex + 1 < maxPage) it.pageIndex + 1
+        else if (it.pageIndex > 0) it.pageIndex - 1 else null
+    }
+    ModalBottomSheet(onDismissRequest = { onPreviewOriginal(false); onDismiss() }) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+            .padding(horizontal = 18.dp).padding(bottom = 24.dp)) {
+            Text("扫描增强设置", style = MaterialTheme.typography.titleLarge)
+            Text("设置只影响阅读显示，不修改 PDZ 或 PDF。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
+            Text("增强模式", style = MaterialTheme.typography.titleMedium)
+            // Keep the four options as an uncluttered single-select group.
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically) {
+                listOf(ReaderEnhanceMode.CLEAN, ReaderEnhanceMode.GRAYSCALE,
+                    ReaderEnhanceMode.BLACK_WHITE, ReaderEnhanceMode.COLOR).forEach { mode ->
+                    ReaderRadioChoice(when(mode) {
+                        ReaderEnhanceMode.CLEAN -> "保真去灰底"
+                        ReaderEnhanceMode.GRAYSCALE -> "灰度增强"
+                        ReaderEnhanceMode.BLACK_WHITE -> "强黑白"
+                        ReaderEnhanceMode.COLOR -> "彩色保真"
+                        ReaderEnhanceMode.ORIGINAL -> "原始"
+                    }, settings.mode == mode) {
+                        onChange(settings.copy(mode = mode, enabled = true))
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("增强强度", style = MaterialTheme.typography.bodyMedium)
+                Text("${strengthDraft.toInt()}%")
+            }
+            Slider(value = strengthDraft, onValueChange = { strengthDraft = it },
+                onValueChangeFinished = {
+                    onChange(settings.copy(strength = strengthDraft.toInt()))
+                }, valueRange = 0f..100f, steps = 19)
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            Text("裁边方式", style = MaterialTheme.typography.titleMedium)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically) {
+                ReaderRadioChoice("不裁边", settings.cropMode == ReaderCropMode.OFF) {
+                    onChange(settings.copy(cropMode = ReaderCropMode.OFF))
+                }
+                ReaderRadioChoice("逐页自动", settings.cropMode == ReaderCropMode.AUTO) {
+                    onChange(settings.copy(cropMode = ReaderCropMode.AUTO, enabled = true))
+                }
+                ReaderRadioChoice("基准页固定", settings.cropMode == ReaderCropMode.REFERENCE) {
+                    if (settings.referenceCrop != null) {
+                        onChange(settings.copy(cropMode = ReaderCropMode.REFERENCE, enabled = true))
+                    } else {
+                        // No reference yet: open its compact chooser without forcing a
+                        // nonexistent crop mode into persisted settings.
+                        requestingSecond = false
+                        showPageInput = false
+                        onGenerateReference(currentPage, false)
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("保留边距", style = MaterialTheme.typography.bodyMedium)
+                Text("${marginDraft.toInt()}%")
+            }
+            Slider(value = marginDraft, onValueChange = { marginDraft = it },
+                onValueChangeFinished = { onChange(settings.copy(safeMargin = marginDraft.toInt())) },
+                valueRange = 2f..12f, steps = 9)
+            if (settings.cropMode == ReaderCropMode.REFERENCE || primary != null) {
+                Spacer(Modifier.height(5.dp))
+                Text("固定裁边", style = MaterialTheme.typography.titleSmall)
+                if (primary != null) {
+                    Text("主基准：第 ${primary.pageIndex + 1} 页" +
+                        (if (settings.secondReferenceCrop != null)
+                            " · 第二基准：第 ${settings.secondReferenceCrop.pageIndex + 1} 页" else " · 另一侧自动镜像"),
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("更改保留边距后，需重新生成基准才会更新裁边框。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { requestingSecond = false; showPageInput = false;
+                        onGenerateReference(currentPage, false) }, enabled = !detectingReference) {
+                        Text("使用当前页")
+                    }
+                    TextButton(onClick = { requestingSecond = false; showPageInput = true; pageInput = "" },
+                        enabled = !detectingReference) { Text("输入页码") }
+                }
+                if (primary != null && settings.secondReferenceCrop == null &&
+                    settings.recommendSecondReference) {
+                    Text("检测到左右页边距差异，建议再补选另一页作为第二基准页。",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                if (primary != null && settings.secondReferenceCrop == null) {
+                    // Usually hidden; a single recommended action appears on mismatch.
+                    TextButton(onClick = {
+                        requestingSecond = true
+                        showPageInput = false
+                        if (suggestedOpposite != null) onGenerateReference(suggestedOpposite, true)
+                    }, enabled = !detectingReference && suggestedOpposite != null) {
+                        Text(if (settings.recommendSecondReference) "补选第 ${suggestedOpposite?.plus(1)} 页作为第二基准"
+                            else "按需添加第二基准页")
+                    }
+                    if (settings.recommendSecondReference) {
+                        TextButton(onClick = { requestingSecond = true; showPageInput = true; pageInput = "" },
+                            enabled = !detectingReference) { Text("指定第二基准页码") }
+                    }
+                } else if (settings.secondReferenceCrop != null) {
+                    TextButton(onClick = { requestingSecond = true; showPageInput = true; pageInput = "" },
+                        enabled = !detectingReference) { Text("更换第二基准页") }
+                }
+                if (showPageInput) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(value = pageInput,
+                            onValueChange = { pageInput = it.filter(Char::isDigit).take(7) },
+                            label = { Text(if (requestingSecond) "第二基准页码" else "基准页码") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            isError = pageInput.isNotEmpty() && !validTyped,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        Spacer(Modifier.width(8.dp))
+                        Button(onClick = {
+                            if (typed != null) onGenerateReference(typed - 1, requestingSecond)
+                            showPageInput = false
+                        }, enabled = validTyped && !detectingReference) { Text("确定") }
+                    }
+                }
+            } else {
+                // No crop chosen: allow a base to be generated without a modal detour.
+                TextButton(onClick = { onGenerateReference(currentPage, false) },
+                    enabled = !detectingReference) { Text("使用当前页生成固定裁边") }
+                TextButton(onClick = { requestingSecond = false; showPageInput = true; pageInput = "" },
+                    enabled = !detectingReference) { Text("指定基准页码") }
+                if (showPageInput) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(value = pageInput,
+                            onValueChange = { pageInput = it.filter(Char::isDigit).take(7) },
+                            label = { Text("基准页码") }, singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        Button(onClick = {
+                            if (typed != null) onGenerateReference(typed - 1, false)
+                            showPageInput = false
+                        }, enabled = validTyped && !detectingReference) { Text("生成") }
+                    }
+                }
+            }
+            if (detectingReference) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (referenceMessage.isNotBlank()) Text(referenceMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { onPreviewOriginal(true) }) { Text("对比原图") }
+                TextButton(onClick = { onChange(ReaderEnhanceSettings()) }) { Text("恢复默认") }
+                Spacer(Modifier.weight(1f))
+                Button(onClick = { onPreviewOriginal(false); onDismiss() }) { Text("完成") }
+            }
+            Text(if (previewOriginal) "当前临时显示原图" else
+                "左右页按 PDF 内部页序交替，基准数据按书籍独立保存。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
