@@ -15,8 +15,8 @@ android {
         applicationId = "org.openssreader.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10007
-        versionName = "1.0.7"
+        versionCode = 10008
+        versionName = "1.0.8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     // Release signing keys come exclusively from CI secrets / local environment.
@@ -36,8 +36,8 @@ android {
         }
     }
     buildTypes {
-        // Keep official 1.0.7 release identity untouched until enhancement is accepted.
-        debug { versionNameSuffix = "-enhance-e3" }
+        // Stable 1.0.8 release: device-tested ScanEnhance E3 Fix1.
+        debug { versionNameSuffix = "-debug" }
         release {
             isMinifyEnabled = false
             if (releaseSigningReady) signingConfig = signingConfigs.getByName("production")

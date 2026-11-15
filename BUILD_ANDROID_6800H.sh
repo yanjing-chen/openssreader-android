@@ -26,7 +26,7 @@ fi
 SDK="${SDK:-$HOME/Android/Sdk}"
 [[ -f "$SDK/platforms/android-37.0/android.jar" ]] || { echo "Missing Android 37.0 platform: $SDK" >&2; exit 3; }
 export ANDROID_HOME="$SDK"
-LOG="$ROOT/android/build-android-1.0.7.log"
+LOG="$ROOT/android/build-android-1.0.8.log"
 set +e
 bash ./gradlew --version 2>&1 | tee "$LOG"
 check_status=${PIPESTATUS[0]}

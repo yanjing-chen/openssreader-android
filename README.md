@@ -1,4 +1,4 @@
-# OpenSSReader Android 1.0.6
+# OpenSSReader Android 1.0.8
 
 OpenSSReader Android is an independent Android project with an embedded Mozilla GeckoView bookstore, native PDZ downloading and decoding, local PDF reading and a responsive bookshelf. Package ID: `org.openssreader.android`; minimum Android API 26.
 

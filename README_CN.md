@@ -1,3 +1,12 @@
+# OpenSSReader Android 1.0.8
+
+> **当前正式发布目标（1.0.8）：** 基于实机验收的 E3-Fix1，加入扫描去灰底、灰度/强黑白/彩色增强、逐页自动与基准页固定裁边（必要时第二基准）、原图/增强与单页/双页/连续圆点点选。所有增强仅用于阅读显示，不修改 PDZ 或 PDF，原始书城/下载/解码/书架功能保持。
+> **发布：** 在 `feature/scan-enhancement-e3-fix1` 上执行 `bash ./PUSH_ANDROID_1_0_8_BRANCH_6800H.sh`；分支 Actions 成功后执行 `bash ./RELEASE_ANDROID_1_0_8_6800H.sh`，由 GitHub Actions 用原正式签名生成 `v1.0.8`。不推送 `main`。详见 `RELEASE_1_0_8_GUIDE_CN.md`。
+
+---
+
+## 历史版本说明（以下为以前的开发记录）
+
 > **扫描阅读增强 E3 候选**：见 [`READER_ENHANCEMENT_E3_CN.md`](READER_ENHANCEMENT_E3_CN.md)。支持顶部 radio 点选、原图/增强切换、逐页自动/单基准镜像、相邻页差异提示补选第二基准。Android 编译及真机验收仍需在本地完成。
 
 # OpenSSReader Android 1.0.6
